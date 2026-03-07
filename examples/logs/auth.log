@@ -1,0 +1,7 @@
+Jan 15 10:00:01 webserver sshd[12345]: Accepted publickey for deploy from 192.168.1.50 port 52341 ssh2: RSA SHA256:abc123
+Jan 15 10:01:15 webserver sshd[12346]: Failed password for root from 10.0.0.99 port 44231 ssh2
+Jan 15 10:01:16 webserver sshd[12346]: Failed password for root from 10.0.0.99 port 44231 ssh2
+Jan 15 10:01:17 webserver sshd[12346]: Failed password for root from 10.0.0.99 port 44231 ssh2
+Jan 15 10:02:00 webserver sudo: admin : TTY=pts/0 ; PWD=/home/admin ; USER=root ; COMMAND=/bin/bash
+Jan 15 10:03:30 webserver sshd[12350]: Failed password for invalid user test from 203.0.113.50 port 33221 ssh2
+Jan 15 10:05:00 dbserver sshd[5678]: Accepted password for backup from 192.168.1.10 port 60001 ssh2

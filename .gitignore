@@ -1,0 +1,29 @@
+/target
+*.db
+*.evtx
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+detected_events.json
+
+# Sigma rule cache
+.sigma-rules/
+
+# Rulesets (generated)
+rulesets/

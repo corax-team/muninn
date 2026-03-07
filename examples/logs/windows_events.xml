@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Events>
+  <Event>
+    <System>
+      <EventID>4624</EventID>
+      <Channel>Security</Channel>
+      <Computer>DC01.corp.local</Computer>
+      <TimeCreated SystemTime="2024-01-15T10:00:00Z"/>
+    </System>
+    <EventData>
+      <Data Name="TargetUserName">admin</Data>
+      <Data Name="LogonType">10</Data>
+      <Data Name="IpAddress">192.168.1.50</Data>
+    </EventData>
+  </Event>
+  <Event>
+    <System>
+      <EventID>4625</EventID>
+      <Channel>Security</Channel>
+      <Computer>DC01.corp.local</Computer>
+      <TimeCreated SystemTime="2024-01-15T10:01:00Z"/>
+    </System>
+    <EventData>
+      <Data Name="TargetUserName">administrator</Data>
+      <Data Name="LogonType">3</Data>
+      <Data Name="IpAddress">10.0.0.99</Data>
+      <Data Name="FailureReason">Unknown user name or bad password</Data>
+    </EventData>
+  </Event>
+  <Event>
+    <System>
+      <EventID>4688</EventID>
+      <Channel>Security</Channel>
+      <Computer>WORKSTATION01.corp.local</Computer>
+      <TimeCreated SystemTime="2024-01-15T10:02:00Z"/>
+    </System>
+    <EventData>
+      <Data Name="NewProcessName">C:\Windows\System32\cmd.exe</Data>
+      <Data Name="CommandLine">cmd.exe /c whoami /all</Data>
+      <Data Name="ParentProcessName">C:\Windows\explorer.exe</Data>
+    </EventData>
+  </Event>
+</Events>

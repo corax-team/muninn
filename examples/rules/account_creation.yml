@@ -1,0 +1,22 @@
+title: New User Account Created
+id: e19d4db0-1e22-4f0a-8e92-example004
+status: stable
+description: Detects creation of new user accounts (Windows EventID 4720), which may indicate persistence by an attacker.
+author: Muninn Example
+date: 2024/01/15
+references:
+  - https://attack.mitre.org/techniques/T1136/001/
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: '4720'
+  condition: selection
+falsepositives:
+  - Legitimate account provisioning
+  - HR onboarding processes
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1136.001

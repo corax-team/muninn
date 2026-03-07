@@ -1,0 +1,25 @@
+title: Encoded PowerShell Command
+id: e19d4db0-1e22-4f0a-8e92-example002
+status: stable
+description: Detects encoded PowerShell execution, commonly used by attackers to obfuscate malicious commands.
+author: Muninn Example
+date: 2024/01/15
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\powershell.exe'
+    CommandLine|contains:
+      - '-enc'
+      - '-EncodedCommand'
+      - '-ec'
+  condition: selection
+falsepositives:
+  - Legitimate automation scripts using encoded commands
+level: high
+tags:
+  - attack.execution
+  - attack.t1059.001

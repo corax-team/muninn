@@ -1,0 +1,23 @@
+title: SSH Brute Force Attempt
+id: e19d4db0-1e22-4f0a-8e92-example005
+status: stable
+description: Detects multiple failed SSH login attempts, indicating potential brute force attack.
+author: Muninn Example
+date: 2024/01/15
+references:
+  - https://attack.mitre.org/techniques/T1110/
+logsource:
+  product: linux
+  service: auth
+detection:
+  selection:
+    _raw|contains|all:
+      - 'Failed password'
+      - 'sshd'
+  condition: selection
+falsepositives:
+  - Users mistyping passwords
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1110.001

@@ -1,0 +1,5 @@
+{"EventID":"4624","LogonType":"3","TargetUserName":"admin","TargetDomainName":"CORP","IpAddress":"192.168.1.50","WorkstationName":"WORKSTATION01","LogonProcessName":"NtLmSsp"}
+{"EventID":"4625","LogonType":"10","TargetUserName":"administrator","TargetDomainName":"CORP","IpAddress":"10.0.0.99","WorkstationName":"UNKNOWN","FailureReason":"%%2313"}
+{"EventID":"4688","NewProcessName":"C:\\Windows\\System32\\cmd.exe","CommandLine":"cmd.exe /c net localgroup administrators","ParentProcessName":"C:\\Windows\\System32\\services.exe","SubjectUserName":"SYSTEM"}
+{"EventID":"4720","TargetUserName":"backdoor_user","SubjectUserName":"admin","SubjectDomainName":"CORP"}
+{"EventID":"4732","TargetUserName":"backdoor_user","MemberSid":"S-1-5-21-123456-1001","GroupName":"Administrators","SubjectUserName":"admin"}

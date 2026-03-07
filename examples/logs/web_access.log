@@ -1,0 +1,5 @@
+CEF:0|WebProxy|ProxyLog|1.0|200|Web Request|3|src=192.168.1.100 dst=93.184.216.34 dpt=443 request=https://example.com/api/data cs1=Mozilla/5.0 act=ALLOW
+CEF:0|WebProxy|ProxyLog|1.0|200|Web Request|3|src=192.168.1.101 dst=104.16.132.229 dpt=443 request=https://cloudflare.com/ cs1=curl/7.68.0 act=ALLOW
+CEF:0|WebProxy|ProxyLog|1.0|403|Blocked Request|7|src=192.168.1.100 dst=185.220.101.1 dpt=80 request=http://malicious-domain.xyz/shell.php cs1=Mozilla/5.0 act=BLOCK
+CEF:0|WebProxy|ProxyLog|1.0|200|Web Request|3|src=10.0.0.50 dst=151.101.1.140 dpt=443 request=https://reddit.com cs1=Mozilla/5.0 act=ALLOW
+CEF:0|IDS|AlertLog|2.0|1000001|SQL Injection Attempt|9|src=203.0.113.50 dst=192.168.1.200 dpt=80 request=/login.php?id=1'OR'1'='1 act=ALERT
