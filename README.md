@@ -13,6 +13,13 @@
   <a href="#english">English</a> &bull; <a href="#russian">Русский</a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/corax-security/muninn/actions"><img src="https://github.com/corax-security/muninn/workflows/Build%20%26%20Release/badge.svg" alt="CI"></a>
+  <a href="https://github.com/corax-security/muninn/releases"><img src="https://img.shields.io/github/v/release/corax-security/muninn" alt="Release"></a>
+  <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-brightgreen" alt="Platform">
+</p>
+
 ---
 
 <a id="english"></a>
