@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/corax-security/muninn/blob/main/.github/logo.png?raw=true" alt="Muninn" width="120">
+  <img src="https://github.com/corax-security/muninn/blob/main/.github/raven-logo-blue.png?raw=true" alt="Muninn" width="120">
 </p>
 
 <h1 align="center">Muninn</h1>
