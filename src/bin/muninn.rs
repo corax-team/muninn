@@ -349,8 +349,13 @@ fn main() -> Result<()> {
 
             match engine.query_sql(&sql) {
                 Ok(r) if r.count > 0 => results.push(Detection {
-                    title: label, level: "medium".into(), description: String::new(),
-                    id: String::new(), author: String::new(), tags: Vec::new(), result: r,
+                    title: label,
+                    level: "medium".into(),
+                    description: String::new(),
+                    id: String::new(),
+                    author: String::new(),
+                    tags: Vec::new(),
+                    result: r,
                 }),
                 Ok(_) => {}
                 Err(e) => {
@@ -365,16 +370,26 @@ fn main() -> Result<()> {
     if let Some(ref sql) = cli.sql {
         let r = engine.query_sql(sql)?;
         results.push(Detection {
-            title: "SQL query".into(), level: "medium".into(), description: String::new(),
-            id: String::new(), author: String::new(), tags: Vec::new(), result: r,
+            title: "SQL query".into(),
+            level: "medium".into(),
+            description: String::new(),
+            id: String::new(),
+            author: String::new(),
+            tags: Vec::new(),
+            result: r,
         });
     }
 
     if let Some(ref kw) = cli.keyword {
         let r = engine.search_keyword(kw)?;
         results.push(Detection {
-            title: format!("keyword: {}", kw), level: "medium".into(), description: String::new(),
-            id: String::new(), author: String::new(), tags: Vec::new(), result: r,
+            title: format!("keyword: {}", kw),
+            level: "medium".into(),
+            description: String::new(),
+            id: String::new(),
+            author: String::new(),
+            tags: Vec::new(),
+            result: r,
         });
     }
 
@@ -382,8 +397,13 @@ fn main() -> Result<()> {
         if let Some((field, pattern)) = fs.split_once('=') {
             let r = engine.search_field(field, pattern)?;
             results.push(Detection {
-                title: format!("{}={}", field, pattern), level: "medium".into(), description: String::new(),
-                id: String::new(), author: String::new(), tags: Vec::new(), result: r,
+                title: format!("{}={}", field, pattern),
+                level: "medium".into(),
+                description: String::new(),
+                id: String::new(),
+                author: String::new(),
+                tags: Vec::new(),
+                result: r,
             });
         }
     }
@@ -392,8 +412,13 @@ fn main() -> Result<()> {
         if let Some((field, pattern)) = rs.split_once('=') {
             let r = engine.search_regex(field, pattern)?;
             results.push(Detection {
-                title: format!("{} =~ /{}/", field, pattern), level: "medium".into(), description: String::new(),
-                id: String::new(), author: String::new(), tags: Vec::new(), result: r,
+                title: format!("{} =~ /{}/", field, pattern),
+                level: "medium".into(),
+                description: String::new(),
+                id: String::new(),
+                author: String::new(),
+                tags: Vec::new(),
+                result: r,
             });
         }
     }
