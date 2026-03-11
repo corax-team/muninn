@@ -199,6 +199,17 @@ struct Cli {
     per_file: bool,
 
     // --- Phase 7 features ---
+    #[cfg(feature = "download")]
+    #[arg(
+        long = "download-rules",
+        help = "Download SIGMA rules: core, core+, all, emerging"
+    )]
+    download_rules: Option<String>,
+
+    #[cfg(feature = "download")]
+    #[arg(long = "rules-dir", help = "Directory to save downloaded rules")]
+    rules_dir: Option<PathBuf>,
+
     #[cfg(feature = "tui")]
     #[arg(long = "tui", help = "Launch interactive terminal UI")]
     tui: bool,
@@ -263,6 +274,49 @@ fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Warn)
         .init();
     let mut cli = Cli::parse();
+
+    // Download rules and exit if requested
+    #[cfg(feature = "download")]
+    if let Some(ref ruleset_name) = cli.download_rules {
+        let ruleset = muninn::download::RuleSet::from_name(ruleset_name)?;
+        let output_dir = cli
+            .rules_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("sigma-rules"));
+
+        if !cli.quiet {
+            println!();
+            println!(
+                "  {} Downloading {} ...",
+                "▶".green().bold(),
+                ruleset.display_name()
+            );
+            println!("  {} Source: {}", "[>]".cyan(), ruleset.url());
+            println!("  {} Target: {:?}", "[>]".cyan(), output_dir);
+            println!();
+        }
+
+        let result = muninn::download::download_rules(ruleset, &output_dir)?;
+
+        if !cli.quiet {
+            println!(
+                "  {} Downloaded {} rules ({:.1} MB) → {:?}",
+                "✓".green().bold(),
+                result.rules_count,
+                result.bytes_downloaded as f64 / 1_048_576.0,
+                result.output_dir
+            );
+            println!();
+            println!(
+                "  {} Use with: muninn -e <logs> -r {:?}",
+                "→".cyan(),
+                result.output_dir
+            );
+        }
+
+        return Ok(());
+    }
+
     let start = Instant::now();
     let run_timestamp = Local::now();
 

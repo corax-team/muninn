@@ -19,9 +19,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --features "all-parsers" --all
+        run: cargo test --features "all-parsers,cli,archive,download,tui,live,ioc-enrich" --all
       - name: Clippy
-        run: cargo clippy --features "all-parsers,cli" -- -D warnings
+        run: cargo clippy --features "all-parsers,cli,archive,download,tui,live,ioc-enrich" -- -D warnings
       - name: Check formatting
         run: cargo fmt -- --check
 
@@ -46,7 +46,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release --features "all-parsers,cli" --target ${{ matrix.target }}
+        run: cargo build --release --features "all-parsers,cli,archive,download,tui,live,ioc-enrich" --target ${{ matrix.target }}
 
       - name: Rename binary (Linux)
         if: runner.os == 'Linux'

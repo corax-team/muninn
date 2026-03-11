@@ -18,6 +18,9 @@ pub use parsers::{detect_format, discover_files, parse_file, parse_file_as, pars
 pub use search::{SearchEngine, SearchResult};
 pub use sigma::{compile, load_rules, EventFilter, Rule};
 
+#[cfg(feature = "download")]
+pub mod download;
+
 #[cfg(feature = "tui")]
 pub mod tui;
 
