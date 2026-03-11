@@ -1,6 +1,9 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
+/// (title, level, matched_rows)
+pub type DetectionTuple = (String, String, Vec<HashMap<String, String>>);
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ThreatScore {
     pub entity: String,
@@ -23,12 +26,13 @@ fn level_weight(level: &str) -> f64 {
 /// Compute per-entity threat scores from detection results.
 /// `detections`: (title, level, rows) tuples
 pub fn compute_scores(
-    detections: &[(String, String, Vec<HashMap<String, String>>)],
+    detections: &[DetectionTuple],
 ) -> Vec<ThreatScore> {
     let entity_fields = ["Computer", "hostname", "User", "SourceIp", "src_ip"];
 
     // entity -> (entity_type, Vec<(title, level, count)>)
-    let mut entity_map: HashMap<String, (String, Vec<(String, String, usize)>)> = HashMap::new();
+    type EntityInfo = (String, Vec<(String, String, usize)>);
+    let mut entity_map: HashMap<String, EntityInfo> = HashMap::new();
 
     for (title, level, rows) in detections {
         // Group by entity within each detection

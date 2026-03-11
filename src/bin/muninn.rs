@@ -576,7 +576,7 @@ fn main() -> Result<()> {
         if cli.per_file {
             println!("    {} DB Mode     {}", "[>]".cyan(), "PER-FILE".bold());
         }
-        let worker_count = cli.workers.unwrap_or_else(|| rayon::current_num_threads());
+        let worker_count = cli.workers.unwrap_or_else(rayon::current_num_threads);
         println!("    {} Workers     {} threads", "[>]".cyan(), format!("{}", worker_count).bold());
         if let Some(max) = max_events {
             println!("    {} Max Events  {}", "[>]".cyan(), format!("{}", max).bold());

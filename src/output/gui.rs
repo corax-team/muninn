@@ -1,9 +1,11 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
+/// (title, level, count, tags, matched_rows)
+pub type GuiDetectionTuple = (String, String, usize, Vec<String>, Vec<HashMap<String, String>>);
+
 pub fn generate_html_report(
-    detections: &[(String, String, usize, Vec<String>, Vec<HashMap<String, String>>)],
-    // (title, level, count, tags, events)
+    detections: &[GuiDetectionTuple],
     summary: &serde_json::Value,
 ) -> Result<String> {
     let det_json: Vec<serde_json::Value> = detections

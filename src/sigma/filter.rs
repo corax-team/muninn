@@ -27,7 +27,7 @@ impl EventFilter {
         let mut channels: HashSet<String> = HashSet::new();
 
         for rule in rules {
-            for (_name, value) in &rule.detection.selections {
+            for value in rule.detection.selections.values() {
                 Self::extract_field_values(value, "EventID", &mut event_ids);
                 Self::extract_field_values(value, "Channel", &mut channels);
             }

@@ -1,6 +1,9 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
+/// (title, level, tags, matched_rows)
+pub type CorrelationTuple = (String, String, Vec<String>, Vec<HashMap<String, String>>);
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AttackChain {
     pub id: String,
@@ -34,8 +37,7 @@ const CORRELATION_FIELDS: &[&str] = &["User", "Computer", "hostname", "LogonId",
 
 /// Correlate detections into attack chains based on shared entity fields.
 pub fn correlate(
-    detections: &[(String, String, Vec<String>, Vec<HashMap<String, String>>)],
-    // (title, level, tags, rows)
+    detections: &[CorrelationTuple],
 ) -> Vec<AttackChain> {
     // entity -> Vec<ChainEvent>
     let mut entity_events: HashMap<String, Vec<ChainEvent>> = HashMap::new();

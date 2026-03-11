@@ -1,6 +1,9 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
+/// (title, level, tags, matched_rows)
+pub type TimelineTuple = (String, String, Vec<String>, Vec<HashMap<String, String>>);
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TimelineEntry {
     pub timestamp: String,
@@ -13,8 +16,7 @@ pub struct TimelineEntry {
 /// Build a sorted timeline from detection results.
 /// Each detection's matched events are inspected for timestamp fields.
 pub fn build_timeline(
-    detections: &[(String, String, Vec<String>, Vec<HashMap<String, String>>)],
-    // (title, level, tags, rows)
+    detections: &[TimelineTuple],
 ) -> Vec<TimelineEntry> {
     let timestamp_fields = [
         "SystemTime",

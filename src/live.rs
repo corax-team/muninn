@@ -9,6 +9,12 @@ pub struct LiveWatcher {
     cursors: HashMap<PathBuf, u64>,
 }
 
+impl Default for LiveWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LiveWatcher {
     pub fn new() -> Self {
         LiveWatcher {

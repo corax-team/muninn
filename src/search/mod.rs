@@ -471,12 +471,10 @@ impl SearchEngine {
         })?;
 
         use std::io::Write;
-        for row in rows {
-            if let Ok(map) = row {
-                let json = serde_json::Value::Object(map);
-                writeln!(file, "{}", json)?;
-                count += 1;
-            }
+        for map in rows.flatten() {
+            let json = serde_json::Value::Object(map);
+            writeln!(file, "{}", json)?;
+            count += 1;
         }
 
         Ok(count)

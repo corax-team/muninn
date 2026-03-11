@@ -52,6 +52,12 @@ pub struct MitreMapper {
     techniques: HashMap<String, Technique>,
 }
 
+impl Default for MitreMapper {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MitreMapper {
     pub fn new() -> Self {
         let mut techniques = HashMap::new();
