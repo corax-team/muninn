@@ -26,10 +26,7 @@ pub fn detect_anomalies(engine: &SearchEngine) -> Result<Vec<Anomaly>> {
         if result.count > 0 {
             anomalies.push(Anomaly {
                 category: "rare_process".into(),
-                description: format!(
-                    "{} rare process(es) seen only 1-2 times",
-                    result.count
-                ),
+                description: format!("{} rare process(es) seen only 1-2 times", result.count),
                 severity: "medium".into(),
                 score: (result.count as f64).min(10.0),
                 evidence: result.rows,
@@ -93,10 +90,7 @@ pub fn detect_anomalies(engine: &SearchEngine) -> Result<Vec<Anomaly>> {
         if result.count > 0 {
             anomalies.push(Anomaly {
                 category: "brute_force".into(),
-                description: format!(
-                    "{} source(s) with 5+ failed logon attempts",
-                    result.count
-                ),
+                description: format!("{} source(s) with 5+ failed logon attempts", result.count),
                 severity: "high".into(),
                 score: (result.count as f64 * 2.0).min(10.0),
                 evidence: result.rows,
@@ -197,7 +191,10 @@ mod tests {
             event.set(*k, *v);
         }
         event.raw = serde_json::to_string(
-            &fields.iter().map(|(k, v)| (*k, *v)).collect::<HashMap<_, _>>(),
+            &fields
+                .iter()
+                .map(|(k, v)| (*k, *v))
+                .collect::<HashMap<_, _>>(),
         )
         .unwrap();
         event.fields.insert("_raw".into(), event.raw.clone());

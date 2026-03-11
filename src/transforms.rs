@@ -17,12 +17,15 @@ impl Transform for Base64Decoder {
     }
 
     fn apply(&self, event: &mut Event) {
-        for field in &["CommandLine", "ScriptBlockText", "Payload", "ServiceFileName"] {
+        for field in &[
+            "CommandLine",
+            "ScriptBlockText",
+            "Payload",
+            "ServiceFileName",
+        ] {
             if let Some(val) = event.fields.get(*field).cloned() {
                 if let Some(decoded) = try_decode_base64_in_string(&val) {
-                    event
-                        .fields
-                        .insert(format!("decoded_{}", field), decoded);
+                    event.fields.insert(format!("decoded_{}", field), decoded);
                 }
             }
         }
@@ -32,12 +35,14 @@ impl Transform for Base64Decoder {
 fn try_decode_base64_in_string(s: &str) -> Option<String> {
     let re = regex::Regex::new(r"[A-Za-z0-9+/]{8,}={0,2}").ok()?;
     for m in re.find_iter(s) {
-        if let Ok(decoded) = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            m.as_str(),
-        ) {
+        if let Ok(decoded) =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, m.as_str())
+        {
             if let Ok(text) = String::from_utf8(decoded.clone()) {
-                if text.chars().all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t') {
+                if text
+                    .chars()
+                    .all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t')
+                {
                     return Some(text);
                 }
             }
@@ -48,7 +53,10 @@ fn try_decode_base64_in_string(s: &str) -> Option<String> {
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 if let Ok(text) = String::from_utf16(&u16s) {
-                    if text.chars().all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t') {
+                    if text
+                        .chars()
+                        .all(|c| !c.is_control() || c == '\n' || c == '\r' || c == '\t')
+                    {
                         return Some(text);
                     }
                 }
@@ -59,12 +67,37 @@ fn try_decode_base64_in_string(s: &str) -> Option<String> {
 }
 
 const LOLBINS: &[&str] = &[
-    "certutil", "mshta", "regsvr32", "rundll32", "cmstp", "msiexec",
-    "wmic", "cscript", "wscript", "bitsadmin", "forfiles", "pcalua",
-    "hh.exe", "msbuild", "installutil", "regasm", "regsvcs",
-    "msconfig", "control", "explorer.exe", "dfsvc", "ieexec",
-    "dnscmd", "ftp.exe", "replace.exe", "xwizard", "presentationhost",
-    "bash.exe", "powershell", "pwsh", "cmd.exe",
+    "certutil",
+    "mshta",
+    "regsvr32",
+    "rundll32",
+    "cmstp",
+    "msiexec",
+    "wmic",
+    "cscript",
+    "wscript",
+    "bitsadmin",
+    "forfiles",
+    "pcalua",
+    "hh.exe",
+    "msbuild",
+    "installutil",
+    "regasm",
+    "regsvcs",
+    "msconfig",
+    "control",
+    "explorer.exe",
+    "dfsvc",
+    "ieexec",
+    "dnscmd",
+    "ftp.exe",
+    "replace.exe",
+    "xwizard",
+    "presentationhost",
+    "bash.exe",
+    "powershell",
+    "pwsh",
+    "cmd.exe",
 ];
 
 impl Transform for LolbinDetector {
@@ -99,8 +132,7 @@ impl Transform for IocExtractor {
         let mut urls = Vec::new();
         let mut domains = Vec::new();
 
-        let ip_re =
-            regex::Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").unwrap();
+        let ip_re = regex::Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").unwrap();
         for cap in ip_re.captures_iter(&raw) {
             let ip = cap[1].to_string();
             if !ip.starts_with("10.")
@@ -113,8 +145,7 @@ impl Transform for IocExtractor {
             }
         }
 
-        let url_re =
-            regex::Regex::new(r#"https?://[^\s'"<>]+"#).unwrap();
+        let url_re = regex::Regex::new(r#"https?://[^\s'"<>]+"#).unwrap();
         for m in url_re.find_iter(&raw) {
             let url = m.as_str().to_string();
             if !urls.contains(&url) {
@@ -317,7 +348,10 @@ mod tests {
         event.raw = "connection to 8.8.8.8 from https://evil.com/payload".into();
         IocExtractor.apply(&mut event);
         assert!(event.get("ioc_ips").unwrap().contains("8.8.8.8"));
-        assert!(event.get("ioc_urls").unwrap().contains("https://evil.com/payload"));
+        assert!(event
+            .get("ioc_urls")
+            .unwrap()
+            .contains("https://evil.com/payload"));
     }
 
     #[test]

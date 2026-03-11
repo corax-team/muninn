@@ -36,9 +36,7 @@ const TIMESTAMP_FIELDS: &[&str] = &[
 const CORRELATION_FIELDS: &[&str] = &["User", "Computer", "hostname", "LogonId", "ProcessId"];
 
 /// Correlate detections into attack chains based on shared entity fields.
-pub fn correlate(
-    detections: &[CorrelationTuple],
-) -> Vec<AttackChain> {
+pub fn correlate(detections: &[CorrelationTuple]) -> Vec<AttackChain> {
     // entity -> Vec<ChainEvent>
     let mut entity_events: HashMap<String, Vec<ChainEvent>> = HashMap::new();
 
@@ -67,7 +65,13 @@ pub fn correlate(
                 .unwrap_or_default();
 
             let mut key_fields = HashMap::new();
-            for field in &["Image", "CommandLine", "EventID", "SourceIp", "DestinationIp"] {
+            for field in &[
+                "Image",
+                "CommandLine",
+                "EventID",
+                "SourceIp",
+                "DestinationIp",
+            ] {
                 if let Some(val) = row.get(*field) {
                     if !val.is_empty() {
                         key_fields.insert(field.to_string(), val.clone());
@@ -82,15 +86,18 @@ pub fn correlate(
                 key_fields,
             };
 
-            entity_events
-                .entry(entity)
-                .or_default()
-                .push(event);
+            entity_events.entry(entity).or_default().push(event);
 
             // Store tactics for this entity
             for t in &mitre_tactics {
                 entity_events
-                    .entry(format!("__tactic_{}_{}", row.get("Computer").or(row.get("User")).unwrap_or(&String::new()), t))
+                    .entry(format!(
+                        "__tactic_{}_{}",
+                        row.get("Computer")
+                            .or(row.get("User"))
+                            .unwrap_or(&String::new()),
+                        t
+                    ))
                     .or_default();
             }
         }

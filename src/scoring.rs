@@ -25,9 +25,7 @@ fn level_weight(level: &str) -> f64 {
 
 /// Compute per-entity threat scores from detection results.
 /// `detections`: (title, level, rows) tuples
-pub fn compute_scores(
-    detections: &[DetectionTuple],
-) -> Vec<ThreatScore> {
+pub fn compute_scores(detections: &[DetectionTuple]) -> Vec<ThreatScore> {
     let entity_fields = ["Computer", "hostname", "User", "SourceIp", "src_ip"];
 
     // entity -> (entity_type, Vec<(title, level, count)>)
@@ -59,9 +57,7 @@ pub fn compute_scores(
             let entry = entity_map
                 .entry(entity)
                 .or_insert_with(|| (etype, Vec::new()));
-            entry
-                .1
-                .push((title.clone(), level.clone(), count));
+            entry.1.push((title.clone(), level.clone(), count));
         }
     }
 
@@ -82,10 +78,7 @@ pub fn compute_scores(
         .collect();
 
     // Normalize to 0-100
-    let max_score = scores
-        .iter()
-        .map(|s| s.score)
-        .fold(0.0f64, f64::max);
+    let max_score = scores.iter().map(|s| s.score).fold(0.0f64, f64::max);
 
     if max_score > 0.0 {
         for s in &mut scores {
@@ -93,7 +86,11 @@ pub fn compute_scores(
         }
     }
 
-    scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scores.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scores
 }
 

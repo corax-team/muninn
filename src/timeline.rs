@@ -15,9 +15,7 @@ pub struct TimelineEntry {
 
 /// Build a sorted timeline from detection results.
 /// Each detection's matched events are inspected for timestamp fields.
-pub fn build_timeline(
-    detections: &[TimelineTuple],
-) -> Vec<TimelineEntry> {
+pub fn build_timeline(detections: &[TimelineTuple]) -> Vec<TimelineEntry> {
     let timestamp_fields = [
         "SystemTime",
         "timestamp",

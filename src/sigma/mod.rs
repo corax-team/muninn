@@ -1,6 +1,6 @@
 pub mod compiler;
-pub mod parser;
 pub mod filter;
+pub mod parser;
 
 pub use compiler::compile;
 pub use filter::EventFilter;

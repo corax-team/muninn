@@ -47,11 +47,7 @@ impl EventFilter {
         Self { required, pass_all }
     }
 
-    fn extract_field_values(
-        value: &serde_yaml::Value,
-        field: &str,
-        out: &mut HashSet<String>,
-    ) {
+    fn extract_field_values(value: &serde_yaml::Value, field: &str, out: &mut HashSet<String>) {
         match value {
             serde_yaml::Value::Mapping(map) => {
                 for (k, v) in map {
@@ -114,10 +110,7 @@ impl EventFilter {
 
         // If no required fields matched, check if event has none of the required fields
         // (it might match a rule that doesn't filter on these fields)
-        let has_any_required_field = self
-            .required
-            .keys()
-            .any(|f| event.fields.contains_key(f));
+        let has_any_required_field = self.required.keys().any(|f| event.fields.contains_key(f));
 
         // If event doesn't have any of the filterable fields, let it pass
         // (it might be from a different log source entirely)

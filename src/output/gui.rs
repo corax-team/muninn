@@ -2,7 +2,13 @@ use anyhow::Result;
 use std::collections::HashMap;
 
 /// (title, level, count, tags, matched_rows)
-pub type GuiDetectionTuple = (String, String, usize, Vec<String>, Vec<HashMap<String, String>>);
+pub type GuiDetectionTuple = (
+    String,
+    String,
+    usize,
+    Vec<String>,
+    Vec<HashMap<String, String>>,
+);
 
 pub fn generate_html_report(
     detections: &[GuiDetectionTuple],

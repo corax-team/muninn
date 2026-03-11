@@ -78,13 +78,21 @@ impl MitreMapper {
             ("T1078", "Valid Accounts", "initial-access"),
             ("T1078.002", "Domain Accounts", "initial-access"),
             ("T1078.003", "Local Accounts", "initial-access"),
-            ("T1190", "Exploit Public-Facing Application", "initial-access"),
+            (
+                "T1190",
+                "Exploit Public-Facing Application",
+                "initial-access",
+            ),
             ("T1566", "Phishing", "initial-access"),
             ("T1566.001", "Spearphishing Attachment", "initial-access"),
             ("T1566.002", "Spearphishing Link", "initial-access"),
             ("T1133", "External Remote Services", "initial-access"),
             ("T1547", "Boot or Logon Autostart Execution", "persistence"),
-            ("T1547.001", "Registry Run Keys / Startup Folder", "persistence"),
+            (
+                "T1547.001",
+                "Registry Run Keys / Startup Folder",
+                "persistence",
+            ),
             ("T1543", "Create or Modify System Process", "persistence"),
             ("T1543.003", "Windows Service", "persistence"),
             ("T1546", "Event Triggered Execution", "persistence"),
@@ -94,20 +102,44 @@ impl MitreMapper {
             ("T1574", "Hijack Execution Flow", "persistence"),
             ("T1574.001", "DLL Search Order Hijacking", "persistence"),
             ("T1574.002", "DLL Side-Loading", "persistence"),
-            ("T1548", "Abuse Elevation Control Mechanism", "privilege-escalation"),
-            ("T1548.002", "Bypass User Account Control", "privilege-escalation"),
+            (
+                "T1548",
+                "Abuse Elevation Control Mechanism",
+                "privilege-escalation",
+            ),
+            (
+                "T1548.002",
+                "Bypass User Account Control",
+                "privilege-escalation",
+            ),
             ("T1134", "Access Token Manipulation", "privilege-escalation"),
-            ("T1068", "Exploitation for Privilege Escalation", "privilege-escalation"),
+            (
+                "T1068",
+                "Exploitation for Privilege Escalation",
+                "privilege-escalation",
+            ),
             ("T1055", "Process Injection", "defense-evasion"),
-            ("T1055.001", "Dynamic-link Library Injection", "defense-evasion"),
+            (
+                "T1055.001",
+                "Dynamic-link Library Injection",
+                "defense-evasion",
+            ),
             ("T1055.012", "Process Hollowing", "defense-evasion"),
             ("T1070", "Indicator Removal", "defense-evasion"),
             ("T1070.001", "Clear Windows Event Logs", "defense-evasion"),
             ("T1070.004", "File Deletion", "defense-evasion"),
             ("T1036", "Masquerading", "defense-evasion"),
             ("T1036.003", "Rename System Utilities", "defense-evasion"),
-            ("T1036.005", "Match Legitimate Name or Location", "defense-evasion"),
-            ("T1027", "Obfuscated Files or Information", "defense-evasion"),
+            (
+                "T1036.005",
+                "Match Legitimate Name or Location",
+                "defense-evasion",
+            ),
+            (
+                "T1027",
+                "Obfuscated Files or Information",
+                "defense-evasion",
+            ),
             ("T1562", "Impair Defenses", "defense-evasion"),
             ("T1562.001", "Disable or Modify Tools", "defense-evasion"),
             ("T1112", "Modify Registry", "defense-evasion"),
@@ -124,7 +156,11 @@ impl MitreMapper {
             ("T1110", "Brute Force", "credential-access"),
             ("T1110.001", "Password Guessing", "credential-access"),
             ("T1110.003", "Password Spraying", "credential-access"),
-            ("T1558", "Steal or Forge Kerberos Tickets", "credential-access"),
+            (
+                "T1558",
+                "Steal or Forge Kerberos Tickets",
+                "credential-access",
+            ),
             ("T1558.003", "Kerberoasting", "credential-access"),
             ("T1552", "Unsecured Credentials", "credential-access"),
             ("T1087", "Account Discovery", "discovery"),
@@ -132,7 +168,11 @@ impl MitreMapper {
             ("T1083", "File and Directory Discovery", "discovery"),
             ("T1057", "Process Discovery", "discovery"),
             ("T1018", "Remote System Discovery", "discovery"),
-            ("T1016", "System Network Configuration Discovery", "discovery"),
+            (
+                "T1016",
+                "System Network Configuration Discovery",
+                "discovery",
+            ),
             ("T1049", "System Network Connections Discovery", "discovery"),
             ("T1033", "System Owner/User Discovery", "discovery"),
             ("T1069", "Permission Groups Discovery", "discovery"),
@@ -141,7 +181,11 @@ impl MitreMapper {
             ("T1021", "Remote Services", "lateral-movement"),
             ("T1021.001", "Remote Desktop Protocol", "lateral-movement"),
             ("T1021.002", "SMB/Windows Admin Shares", "lateral-movement"),
-            ("T1021.003", "Distributed Component Object Model", "lateral-movement"),
+            (
+                "T1021.003",
+                "Distributed Component Object Model",
+                "lateral-movement",
+            ),
             ("T1021.006", "Windows Remote Management", "lateral-movement"),
             ("T1570", "Lateral Tool Transfer", "lateral-movement"),
             ("T1080", "Taint Shared Content", "lateral-movement"),
@@ -158,7 +202,11 @@ impl MitreMapper {
             ("T1573", "Encrypted Channel", "command-and-control"),
             ("T1219", "Remote Access Software", "command-and-control"),
             ("T1132", "Data Encoding", "command-and-control"),
-            ("T1048", "Exfiltration Over Alternative Protocol", "exfiltration"),
+            (
+                "T1048",
+                "Exfiltration Over Alternative Protocol",
+                "exfiltration",
+            ),
             ("T1041", "Exfiltration Over C2 Channel", "exfiltration"),
             ("T1567", "Exfiltration Over Web Service", "exfiltration"),
             ("T1486", "Data Encrypted for Impact", "impact"),
@@ -170,7 +218,11 @@ impl MitreMapper {
             ("T1499", "Endpoint Denial of Service", "impact"),
             ("T1595", "Active Scanning", "reconnaissance"),
             ("T1592", "Gather Victim Host Information", "reconnaissance"),
-            ("T1589", "Gather Victim Identity Information", "reconnaissance"),
+            (
+                "T1589",
+                "Gather Victim Identity Information",
+                "reconnaissance",
+            ),
             ("T1588", "Obtain Capabilities", "resource-development"),
             ("T1588.002", "Tool", "resource-development"),
         ];
@@ -323,10 +375,11 @@ pub fn render_killchain(
             }
         }
         for tactic in tactics_for_detection {
-            tactic_detections
-                .entry(tactic)
-                .or_default()
-                .push((title.clone(), level.clone(), *count));
+            tactic_detections.entry(tactic).or_default().push((
+                title.clone(),
+                level.clone(),
+                *count,
+            ));
         }
     }
 

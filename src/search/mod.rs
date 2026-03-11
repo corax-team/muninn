@@ -409,10 +409,7 @@ impl SearchEngine {
                     "SELECT COUNT(*) FROM \"{}\" WHERE \"{}\" IS NOT NULL AND \"{}\" != ''",
                     TABLE, field, field
                 );
-                if let Ok(count) = self
-                    .conn
-                    .query_row(&sql, [], |row| row.get::<_, usize>(0))
-                {
+                if let Ok(count) = self.conn.query_row(&sql, [], |row| row.get::<_, usize>(0)) {
                     if count > 0 {
                         return Some(field.to_string());
                     }

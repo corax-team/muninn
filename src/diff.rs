@@ -112,7 +112,10 @@ mod tests {
             event.set(*k, *v);
         }
         event.raw = serde_json::to_string(
-            &fields.iter().map(|(k, v)| (*k, *v)).collect::<HashMap<_, _>>(),
+            &fields
+                .iter()
+                .map(|(k, v)| (*k, *v))
+                .collect::<HashMap<_, _>>(),
         )
         .unwrap();
         event.fields.insert("_raw".into(), event.raw.clone());

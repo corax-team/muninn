@@ -29,7 +29,10 @@ impl OutputFormat {
             "timesketch" => Ok(OutputFormat::Timesketch),
             "csv" => Ok(OutputFormat::Csv),
             "sarif" => Ok(OutputFormat::Sarif),
-            _ => bail!("Unknown template: '{}'. Available: splunk, elk, timesketch, csv, sarif", name),
+            _ => bail!(
+                "Unknown template: '{}'. Available: splunk, elk, timesketch, csv, sarif",
+                name
+            ),
         }
     }
 
@@ -55,7 +58,16 @@ impl OutputFormat {
 }
 
 fn find_timestamp(event: &HashMap<String, String>) -> String {
-    let ts_fields = ["SystemTime", "timestamp", "@timestamp", "TimeCreated", "UtcTime", "date", "_time", "time"];
+    let ts_fields = [
+        "SystemTime",
+        "timestamp",
+        "@timestamp",
+        "TimeCreated",
+        "UtcTime",
+        "date",
+        "_time",
+        "time",
+    ];
     for f in &ts_fields {
         if let Some(v) = event.get(*f) {
             if !v.is_empty() {
@@ -74,7 +86,10 @@ fn render_splunk(detections: &[DetectionData]) -> Result<String> {
             let mut obj = serde_json::Map::new();
             obj.insert("_time".into(), serde_json::json!(ts));
             obj.insert("source".into(), serde_json::json!("muninn"));
-            obj.insert("sourcetype".into(), serde_json::json!(format!("muninn:{}", det.level)));
+            obj.insert(
+                "sourcetype".into(),
+                serde_json::json!(format!("muninn:{}", det.level)),
+            );
             obj.insert("rule_title".into(), serde_json::json!(det.title));
             obj.insert("rule_level".into(), serde_json::json!(det.level));
             for (k, v) in event {

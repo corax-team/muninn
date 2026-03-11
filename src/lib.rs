@@ -3,15 +3,15 @@ pub mod parsers;
 pub mod search;
 pub mod sigma;
 
-pub mod mitre;
-pub mod transforms;
-pub mod timeline;
 pub mod anomaly;
-pub mod ioc;
-pub mod scoring;
-pub mod diff;
 pub mod correlate;
+pub mod diff;
+pub mod ioc;
+pub mod mitre;
 pub mod output;
+pub mod scoring;
+pub mod timeline;
+pub mod transforms;
 
 pub use model::{Event, ParseResult, SourceFormat};
 pub use parsers::{detect_format, discover_files, parse_file, parse_file_as, parse_files_parallel};

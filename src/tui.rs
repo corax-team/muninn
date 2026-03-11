@@ -250,7 +250,7 @@ fn ui(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // title bar
-            Constraint::Min(0),   // main content
+            Constraint::Min(0),    // main content
             Constraint::Length(1), // status bar
         ])
         .split(frame.area());
@@ -262,7 +262,12 @@ fn ui(frame: &mut Frame, app: &App) {
         View::FieldDetail => "Field Detail",
     };
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(" Muninn ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Muninn ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("| "),
         Span::styled(view_name, Style::default().fg(Color::Yellow)),
     ]))
@@ -299,7 +304,9 @@ fn render_detection_list(frame: &mut Frame, app: &App, area: Rect) {
             if app.search_query.is_empty() {
                 true
             } else {
-                d.title.to_lowercase().contains(&app.search_query.to_lowercase())
+                d.title
+                    .to_lowercase()
+                    .contains(&app.search_query.to_lowercase())
             }
         })
         .map(|(i, d)| {
@@ -311,12 +318,17 @@ fn render_detection_list(frame: &mut Frame, app: &App, area: Rect) {
                 _ => Color::White,
             };
             let style = if i == app.selected_detection {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             let line = Line::from(vec![
-                Span::styled(format!("[{:>8}] ", d.level), Style::default().fg(level_color)),
+                Span::styled(
+                    format!("[{:>8}] ", d.level),
+                    Style::default().fg(level_color),
+                ),
                 Span::raw(format!("{} ", d.title)),
                 Span::styled(format!("({})", d.count), Style::default().fg(Color::Cyan)),
             ]);
@@ -358,7 +370,9 @@ fn render_event_browser(frame: &mut Frame, app: &App, area: Rect) {
                 .collect::<Vec<_>>()
                 .join("  ");
             let style = if i == app.selected_event {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -395,23 +409,24 @@ fn render_field_detail(frame: &mut Frame, app: &App, area: Rect) {
         .skip(app.scroll)
         .map(|(k, v)| {
             let line = Line::from(vec![
-                Span::styled(format!("{}: ", k), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{}: ", k),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(v.to_string()),
             ]);
             ListItem::new(line)
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(
-                " Event {}/{} — {} fields ",
-                app.selected_event + 1,
-                det.rows.len(),
-                row.len()
-            )),
-    );
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(format!(
+        " Event {}/{} — {} fields ",
+        app.selected_event + 1,
+        det.rows.len(),
+        row.len()
+    )));
     frame.render_widget(list, area);
 }
 

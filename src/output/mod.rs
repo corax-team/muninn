@@ -1,2 +1,2 @@
-pub mod templates;
 pub mod gui;
+pub mod templates;

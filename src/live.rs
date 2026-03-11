@@ -25,9 +25,7 @@ impl LiveWatcher {
     /// Read new content from a file starting at the cursor position.
     /// Returns new lines added since last read.
     pub fn read_new_content(&mut self, path: &Path) -> Result<Vec<String>> {
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         let cursor = self.cursors.get(&canonical).copied().unwrap_or(0);
 
@@ -63,9 +61,7 @@ impl LiveWatcher {
 
     /// Update cursor for a file to its current size.
     pub fn update_cursor(&mut self, path: &Path) -> Result<()> {
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         let metadata = std::fs::metadata(&canonical)
             .with_context(|| format!("Failed to read metadata: {}", canonical.display()))?;
@@ -76,9 +72,7 @@ impl LiveWatcher {
 
     /// Get the current cursor value for a path (for testing).
     pub fn cursor(&self, path: &Path) -> Option<u64> {
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         self.cursors.get(&canonical).copied()
     }
 }
@@ -130,8 +124,7 @@ pub fn watch_directory(path: &Path, rules_path: &Path) -> Result<()> {
 
     let (tx, rx) = mpsc::channel();
 
-    let mut fs_watcher: RecommendedWatcher =
-        RecommendedWatcher::new(tx, Config::default())?;
+    let mut fs_watcher: RecommendedWatcher = RecommendedWatcher::new(tx, Config::default())?;
 
     let watch_mode = if path.is_dir() {
         RecursiveMode::Recursive
@@ -150,10 +143,7 @@ pub fn watch_directory(path: &Path, rules_path: &Path) -> Result<()> {
     for event_result in rx {
         match event_result {
             Ok(event) => {
-                if !matches!(
-                    event.kind,
-                    EventKind::Modify(_) | EventKind::Create(_)
-                ) {
+                if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                     continue;
                 }
 
@@ -165,22 +155,12 @@ pub fn watch_directory(path: &Path, rules_path: &Path) -> Result<()> {
                     match watcher.read_new_content(event_path) {
                         Ok(lines) if lines.is_empty() => continue,
                         Ok(lines) => {
-                            if let Err(e) =
-                                process_lines(event_path, &lines, &compiled)
-                            {
-                                log::error!(
-                                    "Error processing {}: {}",
-                                    event_path.display(),
-                                    e
-                                );
+                            if let Err(e) = process_lines(event_path, &lines, &compiled) {
+                                log::error!("Error processing {}: {}", event_path.display(), e);
                             }
                         }
                         Err(e) => {
-                            log::error!(
-                                "Error reading {}: {}",
-                                event_path.display(),
-                                e
-                            );
+                            log::error!("Error reading {}: {}", event_path.display(), e);
                         }
                     }
                 }
@@ -211,10 +191,7 @@ fn process_lines(
             if let Ok(map) = serde_json::from_str::<HashMap<String, serde_json::Value>>(line) {
                 let mut fields: HashMap<String, String> = HashMap::new();
                 fields.insert("_raw".to_string(), line.clone());
-                fields.insert(
-                    "_source".to_string(),
-                    source_path.display().to_string(),
-                );
+                fields.insert("_source".to_string(), source_path.display().to_string());
                 for (k, v) in map {
                     match v {
                         serde_json::Value::String(s) => {
@@ -237,10 +214,7 @@ fn process_lines(
                 let mut fields = HashMap::new();
                 fields.insert("_raw".to_string(), line.clone());
                 fields.insert("message".to_string(), line.clone());
-                fields.insert(
-                    "_source".to_string(),
-                    source_path.display().to_string(),
-                );
+                fields.insert("_source".to_string(), source_path.display().to_string());
                 Event {
                     fields,
                     raw: line.clone(),

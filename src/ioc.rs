@@ -42,7 +42,9 @@ pub struct Ioc {
 
 pub fn extract_iocs(engine: &SearchEngine) -> Result<Vec<Ioc>> {
     // Query all raw data
-    let _raw_query = engine.query_sql("SELECT \"_raw\" FROM \"events\" WHERE \"_raw\" IS NOT NULL AND \"_raw\" != ''")?;
+    let _raw_query = engine.query_sql(
+        "SELECT \"_raw\" FROM \"events\" WHERE \"_raw\" IS NOT NULL AND \"_raw\" != ''",
+    )?;
 
     let mut ioc_counts: HashMap<(IocType, String), usize> = HashMap::new();
 
@@ -53,13 +55,11 @@ pub fn extract_iocs(engine: &SearchEngine) -> Result<Vec<Ioc>> {
     let url_re = Regex::new(r#"https?://[^\s'"<>\])}]+"#)?;
     let email_re = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")?;
     let domain_re = Regex::new(
-        r#"\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.(?:com|net|org|io|xyz|top|ru|cn|tk|pw|info|biz|cc|me|co|uk|de|fr|jp|br|in|au|gov|edu|mil))\b"#
+        r#"\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.(?:com|net|org|io|xyz|top|ru|cn|tk|pw|info|biz|cc|me|co|uk|de|fr|jp|br|in|au|gov|edu|mil))\b"#,
     )?;
 
     // We need raw field - but execute_query skips _raw. Query differently.
-    let raw_result = engine.query_sql(
-        "SELECT * FROM \"events\""
-    )?;
+    let raw_result = engine.query_sql("SELECT * FROM \"events\"")?;
 
     for row in &raw_result.rows {
         let text: String = row.values().cloned().collect::<Vec<_>>().join(" ");
@@ -129,10 +129,7 @@ pub fn extract_iocs(engine: &SearchEngine) -> Result<Vec<Ioc>> {
 }
 
 fn is_valid_public_ip(ip: &str) -> bool {
-    let parts: Vec<u8> = ip
-        .split('.')
-        .filter_map(|p| p.parse().ok())
-        .collect();
+    let parts: Vec<u8> = ip.split('.').filter_map(|p| p.parse().ok()).collect();
     if parts.len() != 4 {
         return false;
     }
@@ -153,10 +150,7 @@ pub fn render_iocs(iocs: &[Ioc]) -> String {
     let mut output = String::new();
     output.push_str("\n  Extracted IOCs\n");
     output.push_str(&format!("  {}\n", "═".repeat(70)));
-    output.push_str(&format!(
-        "  {:<8} {:<50} {:>6}\n",
-        "Type", "Value", "Count"
-    ));
+    output.push_str(&format!("  {:<8} {:<50} {:>6}\n", "Type", "Value", "Count"));
     output.push_str(&format!("  {}\n", "─".repeat(70)));
 
     for ioc in iocs.iter().take(50) {
@@ -182,10 +176,10 @@ pub fn render_iocs(iocs: &[Ioc]) -> String {
 #[derive(Debug, Clone, Serialize)]
 pub struct EnrichedIoc {
     pub ioc: Ioc,
-    pub verdict: String,       // "malicious", "suspicious", "clean", "unknown"
-    pub source: String,        // "VirusTotal", "AbuseIPDB"
-    pub details: String,       // Human-readable details
-    pub score: Option<f64>,    // 0.0-100.0
+    pub verdict: String,    // "malicious", "suspicious", "clean", "unknown"
+    pub source: String,     // "VirusTotal", "AbuseIPDB"
+    pub details: String,    // Human-readable details
+    pub score: Option<f64>, // 0.0-100.0
     pub raw_response: Option<String>,
 }
 
@@ -203,33 +197,22 @@ pub fn enrich_virustotal(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>
                 "https://www.virustotal.com/api/v3/ip_addresses/{}",
                 ioc.value
             ),
-            IocType::Domain => format!(
-                "https://www.virustotal.com/api/v3/domains/{}",
-                ioc.value
-            ),
+            IocType::Domain => format!("https://www.virustotal.com/api/v3/domains/{}", ioc.value),
             IocType::Url => {
                 // VT requires base64-encoded URL id
                 let url_id = base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
                     ioc.value.as_bytes(),
                 );
-                format!(
-                    "https://www.virustotal.com/api/v3/urls/{}",
-                    url_id
-                )
+                format!("https://www.virustotal.com/api/v3/urls/{}", url_id)
             }
-            IocType::Md5 | IocType::Sha1 | IocType::Sha256 => format!(
-                "https://www.virustotal.com/api/v3/files/{}",
-                ioc.value
-            ),
+            IocType::Md5 | IocType::Sha1 | IocType::Sha256 => {
+                format!("https://www.virustotal.com/api/v3/files/{}", ioc.value)
+            }
             _ => continue,
         };
 
-        match agent
-            .get(&endpoint)
-            .set("x-apikey", api_key)
-            .call()
-        {
+        match agent.get(&endpoint).set("x-apikey", api_key).call() {
             Ok(resp) => {
                 let body = resp.into_string().unwrap_or_default();
                 let (verdict, score, details) = parse_vt_response(&body, &ioc.ioc_type);
@@ -306,7 +289,10 @@ fn parse_vt_response(body: &str, ioc_type: &IocType) -> (String, f64, String) {
             (
                 verdict.into(),
                 score,
-                format!("{}/{} malicious, {}/{} suspicious", malicious, total, suspicious, total),
+                format!(
+                    "{}/{} malicious, {}/{} suspicious",
+                    malicious, total, suspicious, total
+                ),
             )
         }
         IocType::Ipv4 | IocType::Domain => {
@@ -481,9 +467,7 @@ pub fn enrich_opentip(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
                     serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
 
                 // OpenTIP returns zone: "Red", "Orange", "Yellow", "Green", "Grey"
-                let zone = json["response"][0]["zone"]
-                    .as_str()
-                    .unwrap_or("Grey");
+                let zone = json["response"][0]["zone"].as_str().unwrap_or("Grey");
 
                 let (verdict, score) = match zone {
                     "Red" => ("malicious", 90.0),
@@ -597,7 +581,10 @@ mod tests {
             event.set(*k, *v);
         }
         event.raw = serde_json::to_string(
-            &fields.iter().map(|(k, v)| (*k, *v)).collect::<HashMap<_, _>>(),
+            &fields
+                .iter()
+                .map(|(k, v)| (*k, *v))
+                .collect::<HashMap<_, _>>(),
         )
         .unwrap();
         event.fields.insert("_raw".into(), event.raw.clone());
@@ -613,7 +600,9 @@ mod tests {
         ])];
         engine.load_events(&events).unwrap();
         let iocs = extract_iocs(&engine).unwrap();
-        assert!(iocs.iter().any(|i| i.ioc_type == IocType::Ipv4 && i.value == "8.8.8.8"));
+        assert!(iocs
+            .iter()
+            .any(|i| i.ioc_type == IocType::Ipv4 && i.value == "8.8.8.8"));
         // Private IPs should be excluded
         assert!(!iocs.iter().any(|i| i.value == "192.168.1.1"));
     }
@@ -621,9 +610,7 @@ mod tests {
     #[test]
     fn test_extract_hash() {
         let mut engine = SearchEngine::new().unwrap();
-        let events = vec![make_event(&[
-            ("Hash", "d41d8cd98f00b204e9800998ecf8427e"),
-        ])];
+        let events = vec![make_event(&[("Hash", "d41d8cd98f00b204e9800998ecf8427e")])];
         engine.load_events(&events).unwrap();
         let iocs = extract_iocs(&engine).unwrap();
         assert!(iocs.iter().any(|i| i.ioc_type == IocType::Md5));

@@ -103,7 +103,10 @@ struct Cli {
     #[arg(long = "limit", help = "Limit number of result rows")]
     limit: Option<usize>,
 
-    #[arg(long = "rulefilter", help = "Exclude rules matching pattern (repeatable)")]
+    #[arg(
+        long = "rulefilter",
+        help = "Exclude rules matching pattern (repeatable)"
+    )]
     rulefilter: Vec<String>,
 
     #[arg(long = "profile-rules", help = "Show rule execution time ranking")]
@@ -139,7 +142,10 @@ struct Cli {
     killchain: bool,
 
     // --- Phase 4 features ---
-    #[arg(long = "template", help = "Output template: splunk, elk, timesketch, csv, sarif")]
+    #[arg(
+        long = "template",
+        help = "Output template: splunk, elk, timesketch, csv, sarif"
+    )]
     template: Option<String>,
 
     #[arg(long = "template-output", help = "Template output file path")]
@@ -149,7 +155,10 @@ struct Cli {
     gui: Option<PathBuf>,
 
     // --- Phase 5 features ---
-    #[arg(long = "transforms", help = "Apply field transforms (base64 decode, IOC extract, LOLBin detect)")]
+    #[arg(
+        long = "transforms",
+        help = "Apply field transforms (base64 decode, IOC extract, LOLBin detect)"
+    )]
     transforms: bool,
 
     #[arg(long = "timeline", help = "Show attack timeline")]
@@ -167,7 +176,10 @@ struct Cli {
     #[arg(long = "abuseipdb-key", help = "AbuseIPDB API key for IP enrichment")]
     abuseipdb_key: Option<String>,
 
-    #[arg(long = "opentip-key", help = "Kaspersky OpenTIP API key for IOC enrichment")]
+    #[arg(
+        long = "opentip-key",
+        help = "Kaspersky OpenTIP API key for IOC enrichment"
+    )]
     opentip_key: Option<String>,
 
     #[arg(long = "threat-score", help = "Compute per-host/user threat scores")]
@@ -180,7 +192,10 @@ struct Cli {
     #[arg(long = "correlate", help = "Correlate events into attack chains")]
     correlate: bool,
 
-    #[arg(long = "per-file", help = "Process each file in separate DB (parallel)")]
+    #[arg(
+        long = "per-file",
+        help = "Process each file in separate DB (parallel)"
+    )]
     per_file: bool,
 
     // --- Phase 7 features ---
@@ -189,17 +204,26 @@ struct Cli {
     tui: bool,
 
     #[cfg(feature = "live")]
-    #[arg(long = "live", help = "Watch directory for changes and detect in real-time")]
+    #[arg(
+        long = "live",
+        help = "Watch directory for changes and detect in real-time"
+    )]
     live: bool,
 
     // --- Performance controls ---
     #[arg(long = "max-events", help = "Maximum events to load (memory control)")]
     max_events: Option<usize>,
 
-    #[arg(long = "workers", help = "Number of parallel workers (default: CPU cores)")]
+    #[arg(
+        long = "workers",
+        help = "Number of parallel workers (default: CPU cores)"
+    )]
     workers: Option<usize>,
 
-    #[arg(long = "batch-size", help = "Events per batch for loading (default: 50000)")]
+    #[arg(
+        long = "batch-size",
+        help = "Events per batch for loading (default: 50000)"
+    )]
     batch_size: Option<usize>,
 }
 
@@ -249,49 +273,121 @@ fn main() -> Result<()> {
         let cfg: Config = serde_yaml::from_str(&content)
             .context(format!("Failed to parse config {:?}", config_path))?;
         // CLI flags take precedence over config
-        if cli.rules.is_none() { cli.rules = cfg.rules; }
-        if cli.min_level == "low" { if let Some(ml) = cfg.min_level { cli.min_level = ml; } }
-        if cli.limit.is_none() { cli.limit = cfg.limit; }
-        if !cli.hashes { cli.hashes = cfg.hashes.unwrap_or(false); }
-        if !cli.quiet { cli.quiet = cfg.quiet.unwrap_or(false); }
-        if !cli.no_report { cli.no_report = cfg.no_report.unwrap_or(false); }
-        if !cli.stats { cli.stats = cfg.stats.unwrap_or(false); }
-        if cli.select.is_none() { cli.select = cfg.select; }
-        if cli.avoid.is_none() { cli.avoid = cfg.avoid; }
-        if cli.output.is_none() { cli.output = cfg.output; }
-        if cli.dbfile.is_none() { cli.dbfile = cfg.dbfile; }
-        if cli.distinct.is_none() { cli.distinct = cfg.distinct; }
-        if cli.rulefilter.is_empty() { cli.rulefilter = cfg.rulefilter.unwrap_or_default(); }
-        if !cli.profile_rules { cli.profile_rules = cfg.profile_rules.unwrap_or(false); }
-        if cli.after.is_none() { cli.after = cfg.after; }
-        if cli.before.is_none() { cli.before = cfg.before; }
-        if !cli.transforms { cli.transforms = cfg.transforms.unwrap_or(false); }
-        if !cli.timeline { cli.timeline = cfg.timeline.unwrap_or(false); }
-        if !cli.anomalies { cli.anomalies = cfg.anomalies.unwrap_or(false); }
-        if !cli.ioc_extract { cli.ioc_extract = cfg.ioc_extract.unwrap_or(false); }
-        if !cli.threat_score { cli.threat_score = cfg.threat_score.unwrap_or(false); }
-        if !cli.correlate { cli.correlate = cfg.correlate.unwrap_or(false); }
-        if !cli.killchain { cli.killchain = cfg.killchain.unwrap_or(false); }
+        if cli.rules.is_none() {
+            cli.rules = cfg.rules;
+        }
+        if cli.min_level == "low" {
+            if let Some(ml) = cfg.min_level {
+                cli.min_level = ml;
+            }
+        }
+        if cli.limit.is_none() {
+            cli.limit = cfg.limit;
+        }
+        if !cli.hashes {
+            cli.hashes = cfg.hashes.unwrap_or(false);
+        }
+        if !cli.quiet {
+            cli.quiet = cfg.quiet.unwrap_or(false);
+        }
+        if !cli.no_report {
+            cli.no_report = cfg.no_report.unwrap_or(false);
+        }
+        if !cli.stats {
+            cli.stats = cfg.stats.unwrap_or(false);
+        }
+        if cli.select.is_none() {
+            cli.select = cfg.select;
+        }
+        if cli.avoid.is_none() {
+            cli.avoid = cfg.avoid;
+        }
+        if cli.output.is_none() {
+            cli.output = cfg.output;
+        }
+        if cli.dbfile.is_none() {
+            cli.dbfile = cfg.dbfile;
+        }
+        if cli.distinct.is_none() {
+            cli.distinct = cfg.distinct;
+        }
+        if cli.rulefilter.is_empty() {
+            cli.rulefilter = cfg.rulefilter.unwrap_or_default();
+        }
+        if !cli.profile_rules {
+            cli.profile_rules = cfg.profile_rules.unwrap_or(false);
+        }
+        if cli.after.is_none() {
+            cli.after = cfg.after;
+        }
+        if cli.before.is_none() {
+            cli.before = cfg.before;
+        }
+        if !cli.transforms {
+            cli.transforms = cfg.transforms.unwrap_or(false);
+        }
+        if !cli.timeline {
+            cli.timeline = cfg.timeline.unwrap_or(false);
+        }
+        if !cli.anomalies {
+            cli.anomalies = cfg.anomalies.unwrap_or(false);
+        }
+        if !cli.ioc_extract {
+            cli.ioc_extract = cfg.ioc_extract.unwrap_or(false);
+        }
+        if !cli.threat_score {
+            cli.threat_score = cfg.threat_score.unwrap_or(false);
+        }
+        if !cli.correlate {
+            cli.correlate = cfg.correlate.unwrap_or(false);
+        }
+        if !cli.killchain {
+            cli.killchain = cfg.killchain.unwrap_or(false);
+        }
     }
 
     // Load field mapping if provided
     let field_map: Option<HashMap<String, String>> = if let Some(ref map_path) = cli.field_map {
         let content = std::fs::read_to_string(map_path)
             .context(format!("Failed to read field map {:?}", map_path))?;
-        Some(serde_yaml::from_str(&content)
-            .context(format!("Failed to parse field map {:?}", map_path))?)
+        Some(
+            serde_yaml::from_str(&content)
+                .context(format!("Failed to parse field map {:?}", map_path))?,
+        )
     } else {
         None
     };
 
     if !cli.quiet {
         println!();
-        println!("{}", "  ███╗   ███╗██╗   ██╗███╗   ██╗██╗███╗   ██╗███╗   ██╗".cyan());
-        println!("{}", "  ████╗ ████║██║   ██║████╗  ██║██║████╗  ██║████╗  ██║".cyan());
-        println!("{}", "  ██╔████╔██║██║   ██║██╔██╗ ██║██║██╔██╗ ██║██╔██╗ ██║".cyan().bold());
-        println!("{}", "  ██║╚██╔╝██║██║   ██║██║╚██╗██║██║██║╚██╗██║██║╚██╗██║".blue().bold());
-        println!("{}", "  ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║██║██║ ╚████║██║ ╚████║".blue());
-        println!("{}", "  ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝".blue());
+        println!(
+            "{}",
+            "  ███╗   ███╗██╗   ██╗███╗   ██╗██╗███╗   ██╗███╗   ██╗".cyan()
+        );
+        println!(
+            "{}",
+            "  ████╗ ████║██║   ██║████╗  ██║██║████╗  ██║████╗  ██║".cyan()
+        );
+        println!(
+            "{}",
+            "  ██╔████╔██║██║   ██║██╔██╗ ██║██║██╔██╗ ██║██╔██╗ ██║"
+                .cyan()
+                .bold()
+        );
+        println!(
+            "{}",
+            "  ██║╚██╔╝██║██║   ██║██║╚██╗██║██║██║╚██╗██║██║╚██╗██║"
+                .blue()
+                .bold()
+        );
+        println!(
+            "{}",
+            "  ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║██║██║ ╚████║██║ ╚████║".blue()
+        );
+        println!(
+            "{}",
+            "  ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝".blue()
+        );
         println!(
             "  {} SIGMA Detection Engine for EVTX/JSON/Syslog/CEF/Zeek {}",
             "-=".dimmed(),
@@ -545,7 +641,12 @@ fn main() -> Result<()> {
     if let Some(ref flat_path) = cli.keepflat {
         let count = engine.export_jsonl(flat_path)?;
         if !cli.quiet {
-            println!("  {} Exported {} events → {:?}", "✓".green(), count, flat_path);
+            println!(
+                "  {} Exported {} events → {:?}",
+                "✓".green(),
+                count,
+                flat_path
+            );
         }
     }
 
@@ -556,12 +657,28 @@ fn main() -> Result<()> {
             .collect();
 
         // Zircolite-style Processing section
-        println!("  {} {}", "[+]".green().bold(), "Processing".bold().underline());
-        println!("    {} Files       {}", "[>]".cyan(), format!("{}", files.len()).bold());
-        println!("    {} Events      {}", "[>]".cyan(), format!("{}", total_events).bold());
+        println!(
+            "  {} {}",
+            "[+]".green().bold(),
+            "Processing".bold().underline()
+        );
+        println!(
+            "    {} Files       {}",
+            "[>]".cyan(),
+            format!("{}", files.len()).bold()
+        );
+        println!(
+            "    {} Events      {}",
+            "[>]".cyan(),
+            format!("{}", total_events).bold()
+        );
         println!("    {} Formats     {}", "[>]".cyan(), formats.join(", "));
         if filtered_events > 0 {
-            println!("    {} Filtered    {} events excluded by early filter", "[>]".cyan(), filtered_events);
+            println!(
+                "    {} Filtered    {} events excluded by early filter",
+                "[>]".cyan(),
+                filtered_events
+            );
         }
         println!(
             "    {} Duration    {:.2}s ({:.0} events/s)",
@@ -577,9 +694,17 @@ fn main() -> Result<()> {
             println!("    {} DB Mode     {}", "[>]".cyan(), "PER-FILE".bold());
         }
         let worker_count = cli.workers.unwrap_or_else(rayon::current_num_threads);
-        println!("    {} Workers     {} threads", "[>]".cyan(), format!("{}", worker_count).bold());
+        println!(
+            "    {} Workers     {} threads",
+            "[>]".cyan(),
+            format!("{}", worker_count).bold()
+        );
         if let Some(max) = max_events {
-            println!("    {} Max Events  {}", "[>]".cyan(), format!("{}", max).bold());
+            println!(
+                "    {} Max Events  {}",
+                "[>]".cyan(),
+                format!("{}", max).bold()
+            );
         }
         println!();
     }
@@ -627,9 +752,9 @@ fn main() -> Result<()> {
         if !cli.rulefilter.is_empty() {
             let before_count = rules.len();
             rules.retain(|r| {
-                !cli.rulefilter.iter().any(|pat| {
-                    r.title.to_lowercase().contains(&pat.to_lowercase())
-                })
+                !cli.rulefilter
+                    .iter()
+                    .any(|pat| r.title.to_lowercase().contains(&pat.to_lowercase()))
             });
             if !cli.quiet && rules.len() < before_count {
                 println!(
@@ -642,7 +767,11 @@ fn main() -> Result<()> {
         }
 
         if !cli.quiet {
-            println!("  {} {} SIGMA rules loaded", "[+]".green().bold(), rules.len().to_string().bold());
+            println!(
+                "  {} {} SIGMA rules loaded",
+                "[+]".green().bold(),
+                rules.len().to_string().bold()
+            );
             if !cli.rulefilter.is_empty() {
                 println!("  {} Event filter enabled", "[+]".green().bold());
             }
@@ -653,16 +782,18 @@ fn main() -> Result<()> {
             use rayon::prelude::*;
 
             if !cli.quiet {
-                println!("  {} Per-file mode: processing {} files in parallel", "▶".cyan(), files.len());
+                println!(
+                    "  {} Per-file mode: processing {} files in parallel",
+                    "▶".cyan(),
+                    files.len()
+                );
             }
 
             // Pre-compile rules to SQL
             let compiled: Vec<_> = rules
                 .iter()
                 .filter(|r| level_rank(&r.level) >= min_rank)
-                .filter_map(|r| {
-                    sigma::compile(r).ok().map(|sql| (r.clone(), sql))
-                })
+                .filter_map(|r| sigma::compile(r).ok().map(|sql| (r.clone(), sql)))
                 .collect();
 
             // Process files in parallel
@@ -741,13 +872,11 @@ fn main() -> Result<()> {
                 rules
                     .par_iter()
                     .filter(|r| level_rank(&r.level) >= min_rank)
-                    .filter_map(|r| {
-                        match sigma::compile(r) {
-                            Ok(sql) => Some((r.clone(), sql)),
-                            Err(e) => {
-                                log::debug!("Rule '{}' compile error: {}", r.title, e);
-                                None
-                            }
+                    .filter_map(|r| match sigma::compile(r) {
+                        Ok(sql) => Some((r.clone(), sql)),
+                        Err(e) => {
+                            log::debug!("Rule '{}' compile error: {}", r.title, e);
+                            None
                         }
                     })
                     .collect()
@@ -992,7 +1121,11 @@ fn main() -> Result<()> {
                 let mitre_str = if techniques.is_empty() {
                     String::new()
                 } else {
-                    techniques.iter().map(|t| t.id.clone()).collect::<Vec<_>>().join(",")
+                    techniques
+                        .iter()
+                        .map(|t| t.id.clone())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 };
 
                 let title_display: String = d.title.chars().take(50).collect();
@@ -1121,11 +1254,7 @@ fn main() -> Result<()> {
 
             // Top hits
             if !results.is_empty() {
-                println!(
-                    "  {}  {} Top Hits",
-                    "│".dimmed(),
-                    "🏆".dimmed(),
-                );
+                println!("  {}  {} Top Hits", "│".dimmed(), "🏆".dimmed(),);
                 for d in results.iter().take(5) {
                     println!(
                         "  {}                {} {} ({})",
@@ -1150,23 +1279,34 @@ fn main() -> Result<()> {
                 let refs = muninn::mitre::MitreMapper::parse_tags(&d.tags);
                 let techs = mapper.resolve_refs(&refs);
                 for t in &techs {
-                    let entry = tactic_hits
-                        .entry(t.tactic.clone())
-                        .or_insert((0, 0));
+                    let entry = tactic_hits.entry(t.tactic.clone()).or_insert((0, 0));
                     entry.0 += 1; // technique count
                     entry.1 += d.result.count; // hit count
                 }
             }
 
             if !tactic_hits.is_empty() {
-                println!("  {} {}", "🛡".dimmed(), "ATT&CK Coverage".bold().underline());
+                println!(
+                    "  {} {}",
+                    "🛡".dimmed(),
+                    "ATT&CK Coverage".bold().underline()
+                );
                 let max_hits = tactic_hits.values().map(|v| v.1).max().unwrap_or(1);
                 let tactic_order = [
-                    "reconnaissance", "resource-development", "initial-access",
-                    "execution", "persistence", "privilege-escalation",
-                    "defense-evasion", "credential-access", "discovery",
-                    "lateral-movement", "collection", "command-and-control",
-                    "exfiltration", "impact",
+                    "reconnaissance",
+                    "resource-development",
+                    "initial-access",
+                    "execution",
+                    "persistence",
+                    "privilege-escalation",
+                    "defense-evasion",
+                    "credential-access",
+                    "discovery",
+                    "lateral-movement",
+                    "collection",
+                    "command-and-control",
+                    "exfiltration",
+                    "impact",
                 ];
                 for tactic in &tactic_order {
                     if let Some(&(tech_count, hit_count)) = tactic_hits.get(*tactic) {
@@ -1292,7 +1432,12 @@ fn main() -> Result<()> {
             };
             std::fs::write(&out_path, &rendered)?;
             if !cli.quiet {
-                println!("  {} Template ({}) → {:?}", "✓".green(), template_name, out_path);
+                println!(
+                    "  {} Template ({}) → {:?}",
+                    "✓".green(),
+                    template_name,
+                    out_path
+                );
             }
         }
 
@@ -1400,12 +1545,8 @@ fn main() -> Result<()> {
 
     // Diff Mode
     if let Some(ref diff_path) = cli.diff {
-        let diff_files = parsers::discover_files(
-            diff_path,
-            cli.select.as_deref(),
-            cli.avoid.as_deref(),
-            true,
-        )?;
+        let diff_files =
+            parsers::discover_files(diff_path, cli.select.as_deref(), cli.avoid.as_deref(), true)?;
         let mut engine_b = SearchEngine::new()?;
         for file in &diff_files {
             if let Ok(result) = parsers::parse_file(file) {
@@ -1527,10 +1668,7 @@ fn main() -> Result<()> {
             );
             muninn::live::watch_directory(&cli.events, rules_path)?;
         } else if !cli.quiet {
-            println!(
-                "  {} --live requires --rules to be specified",
-                "✗".red()
-            );
+            println!("  {} --live requires --rules to be specified", "✗".red());
         }
     }
 
