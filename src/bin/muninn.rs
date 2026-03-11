@@ -514,38 +514,38 @@ fn main() -> Result<()> {
 
     if !cli.quiet {
         println!();
+        // Norse/Corax banner: frost → steel → deep night gradient
+        let b = "\u{2588}"; // █
+        let banner_lines: Vec<String> = vec![
+            format!("{b}{b}{b}    {b}{b}{b}  {b}{b}    {b}{b}  {b}{b}{b}    {b}{b}  {b}{b}  {b}{b}{b}    {b}{b}  {b}{b}{b}    {b}{b}"),
+            format!("{b}{b}{b}{b}  {b}{b}{b}{b}  {b}{b}    {b}{b}  {b}{b}{b}{b}   {b}{b}  {b}{b}  {b}{b}{b}{b}   {b}{b}  {b}{b}{b}{b}   {b}{b}"),
+            format!("{b}{b} {b}{b}{b}{b} {b}{b}  {b}{b}    {b}{b}  {b}{b} {b}{b}  {b}{b}  {b}{b}  {b}{b} {b}{b}  {b}{b}  {b}{b} {b}{b}  {b}{b}"),
+            format!("{b}{b}  {b}{b}  {b}{b}  {b}{b}    {b}{b}  {b}{b}  {b}{b} {b}{b}  {b}{b}  {b}{b}  {b}{b} {b}{b}  {b}{b}  {b}{b} {b}{b}"),
+            format!("{b}{b}  {b}{b}  {b}{b}  {b}{b}    {b}{b}  {b}{b}   {b}{b}{b}{b}  {b}{b}  {b}{b}   {b}{b}{b}{b}  {b}{b}   {b}{b}{b}{b}"),
+            format!("{b}{b}      {b}{b}   {b}{b}{b}{b}{b}{b}   {b}{b}    {b}{b}{b}  {b}{b}  {b}{b}    {b}{b}{b}  {b}{b}    {b}{b}{b}"),
+        ];
+        let colors: [(u8, u8, u8); 6] = [
+            (210, 225, 240),  // frost
+            (175, 195, 225),  // pale ice
+            (140, 165, 205),  // silver steel
+            (100, 130, 180),  // cold blue
+            (65, 95, 150),    // deep steel
+            (35, 60, 115),    // night
+        ];
+        for (line, &(r, g, b)) in banner_lines.iter().zip(colors.iter()) {
+            println!("  {}", line.truecolor(r, g, b).bold());
+        }
         println!(
-            "{}",
-            r"  __  __ _   _ _   _ ___ _   _ _   _ "
-                .truecolor(180, 200, 220)
-                .bold()
+            "              {}",
+            "Memory of Corax".truecolor(160, 175, 200)
         );
         println!(
-            "{}",
-            r" |  \/  | | | | \ | |_ _| \ | | \ | |"
-                .truecolor(120, 155, 200)
-                .bold()
-        );
-        println!(
-            "{}",
-            r" | |\/| | | | |  \| || ||  \| |  \| |"
-                .truecolor(70, 110, 170)
-                .bold()
-        );
-        println!(
-            "{}",
-            r" | |  | | |_| | |\  || || |\  | |\  |"
-                .truecolor(40, 70, 130)
-                .bold()
-        );
-        println!(
-            "{}",
-            r" |_|  |_|\___/|_| \_|___|_| \_|_| \_|".truecolor(20, 40, 90)
-        );
-        println!(
-            "  {} SIGMA Detection Engine for EVTX/JSON/Syslog/CEF/Zeek {}",
-            "-=".truecolor(60, 90, 140),
-            format!("v{} =-", env!("CARGO_PKG_VERSION")).truecolor(60, 90, 140)
+            "  {}",
+            format!(
+                "-= SIGMA Detection Engine for EVTX/JSON/Syslog/CEF/Zeek v{} =-",
+                env!("CARGO_PKG_VERSION")
+            )
+            .truecolor(90, 110, 145)
         );
         println!();
     }
