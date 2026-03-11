@@ -45,6 +45,11 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
 
+      - name: Static CRT (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
       - name: Build release
         run: cargo build --release --features "all-parsers,cli,archive,download,tui,live,ioc-enrich" --target ${{ matrix.target }}
 
