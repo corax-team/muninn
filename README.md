@@ -63,33 +63,259 @@ Invoke-WebRequest -Uri "https://github.com/corax-security/muninn/releases/latest
 ## Quick Start
 
 ```bash
-# SIGMA detection with full analysis
-muninn -e ./evidence/ -r rules/ --stats --timeline --killchain --threat-score
+# 1. Download SIGMA rules (one-time)
+muninn --download-rules all
 
-# Keyword search
+# 2. Run full analysis
+muninn -e ./evidence/ -r sigma-rules/ --stats --timeline --killchain --threat-score
+```
+
+## Usage Examples
+
+<details open>
+<summary><b>Getting started</b></summary>
+
+```bash
+# Download SIGMA rules — pick a ruleset
+muninn --download-rules all                          # all 3100+ rules
+muninn --download-rules core                         # curated core only
+muninn --download-rules core+                        # core + extended
+muninn --download-rules emerging                     # emerging threats addon
+muninn --download-rules all --rules-dir ./my-rules/  # custom output dir
+
+# Basic scan with all rules
+muninn -e ./evidence/ -r sigma-rules/
+
+# Scan with statistics
+muninn -e ./evidence/ -r sigma-rules/ --stats
+
+# Scan specific log file
+muninn -e ./Security.evtx -r sigma-rules/rules/windows/
+
+# Quiet mode (only detections)
+muninn -e ./evidence/ -r sigma-rules/ -q
+
+# Custom JSON output
+muninn -e ./evidence/ -r sigma-rules/ -o results.json
+
+# Disable auto-report
+muninn -e ./evidence/ -r sigma-rules/ --no-report
+```
+</details>
+
+<details>
+<summary><b>Search — keyword, field, regex, SQL</b></summary>
+
+```bash
+# Keyword search (full-text across all fields)
 muninn -e ./evidence/ -k "mimikatz"
+muninn -e ./evidence/ -k "powershell"
+muninn -e ./evidence/ -k "cmd.exe"
+muninn -e ./evidence/ -k "admin"
 
-# Field search
+# Field search (LIKE syntax: % = wildcard, _ = single char)
 muninn -e ./evidence/ -f "EventID=4624"
+muninn -e ./evidence/ -f "Image=%cmd.exe"
+muninn -e ./evidence/ -f "User=%admin%"
+muninn -e ./evidence/ -f "SourceIp=192.168.%"
+muninn -e ./evidence/ -f "CommandLine=%whoami%"
+muninn -e ./evidence/ -f "LogonType=10"
 
-# SQL query
+# Regex search
+muninn -e ./evidence/ --regex "CommandLine=.*-[eE]nc[oO]?d?e?d?C?o?m?m?a?n?d?\s+[A-Za-z0-9+/=]{20,}"
+muninn -e ./evidence/ --regex "Image=.*\\\\(cmd|powershell|pwsh)\.exe$"
+muninn -e ./evidence/ --regex "DestinationIp=^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)"
+
+# Raw SQL queries
 muninn -e ./evidence/ --sql "SELECT * FROM events WHERE \"CommandLine\" LIKE '%whoami%'"
+muninn -e ./evidence/ --sql "SELECT \"Image\", COUNT(*) as cnt FROM events GROUP BY \"Image\" ORDER BY cnt DESC LIMIT 20"
+muninn -e ./evidence/ --sql "SELECT DISTINCT \"User\" FROM events WHERE \"EventID\" = '4624'"
+muninn -e ./evidence/ --sql "SELECT * FROM events WHERE \"EventID\" IN ('4624','4625','4648') LIMIT 100"
 
-# Regex
-muninn -e ./evidence/ --regex "CommandLine=.*-enc\s+[A-Za-z0-9+/=]+"
+# SQL from file
+muninn -e ./evidence/ --sql-file queries.sql
 
-# Extract IOCs with VirusTotal enrichment
-muninn -e ./evidence/ --ioc-extract --vt-key YOUR_API_KEY
+# Statistics and exploration
+muninn -e ./evidence/ --stats
+muninn -e ./evidence/ --distinct EventID
+muninn -e ./evidence/ --distinct Image
+muninn -e ./evidence/ --distinct User
+muninn -e ./evidence/ --distinct SourceIp
+muninn -e ./evidence/ --distinct Channel
 
-# Anomaly detection
+# Limit results
+muninn -e ./evidence/ -k "error" --limit 50
+```
+</details>
+
+<details>
+<summary><b>SIGMA detection — filtering and profiling</b></summary>
+
+```bash
+# Minimum severity filter
+muninn -e ./evidence/ -r sigma-rules/ --min-level high        # only high + critical
+muninn -e ./evidence/ -r sigma-rules/ --min-level critical     # only critical
+muninn -e ./evidence/ -r sigma-rules/ --min-level medium       # medium and above
+
+# Exclude noisy rules
+muninn -e ./evidence/ -r sigma-rules/ --rulefilter "sysmon config"
+muninn -e ./evidence/ -r sigma-rules/ --rulefilter "sysmon" --rulefilter "defender"
+
+# Profile rule performance
+muninn -e ./evidence/ -r sigma-rules/ --profile-rules
+
+# Specific rule directories
+muninn -e ./evidence/ -r sigma-rules/rules/windows/process_creation/
+muninn -e ./evidence/ -r sigma-rules/rules/windows/powershell/
+muninn -e ./evidence/ -r sigma-rules/rules/linux/
+muninn -e ./evidence/ -r sigma-rules/rules/cloud/aws/
+muninn -e ./evidence/ -r sigma-rules/rules/network/
+
+# Use your own rules
+muninn -e ./evidence/ -r ./custom-rules/my-rule.yml
+muninn -e ./evidence/ -r ./custom-rules/
+
+# Event hashing
+muninn -e ./evidence/ -r sigma-rules/ --hashes
+```
+</details>
+
+<details>
+<summary><b>Advanced analysis — MITRE, timeline, anomalies, IOC, scoring</b></summary>
+
+```bash
+# Full analysis pipeline
+muninn -e ./evidence/ -r sigma-rules/ --stats --timeline --killchain --threat-score --anomalies --ioc-extract --correlate --transforms
+
+# MITRE ATT&CK
+muninn -e ./evidence/ -r sigma-rules/ --killchain              # kill chain view
+muninn -e ./evidence/ -r sigma-rules/ --navigator layer.json   # ATT&CK Navigator export
+
+# Attack timeline
+muninn -e ./evidence/ -r sigma-rules/ --timeline
+
+# Anomaly detection (no rules needed)
 muninn -e ./evidence/ --anomalies
 
-# HTML report
-muninn -e ./evidence/ -r rules/ --gui report.html
+# IOC extraction
+muninn -e ./evidence/ --ioc-extract
 
-# Export for SIEM
-muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.json
+# IOC enrichment with threat intelligence
+muninn -e ./evidence/ --ioc-extract --vt-key YOUR_VT_KEY
+muninn -e ./evidence/ --ioc-extract --abuseipdb-key YOUR_ABUSEIPDB_KEY
+muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_OPENTIP_KEY
+muninn -e ./evidence/ --ioc-extract --vt-key VT_KEY --abuseipdb-key ABUSEIPDB_KEY  # multiple
+
+# Threat scoring per host/user
+muninn -e ./evidence/ -r sigma-rules/ --threat-score
+
+# Attack chain correlation
+muninn -e ./evidence/ -r sigma-rules/ --correlate
+
+# Field transforms (base64 decode, LOLBin detect, DNS entropy, obfuscation)
+muninn -e ./evidence/ --transforms -r sigma-rules/
+
+# Diff two evidence sets
+muninn -e ./evidence-before/ -r sigma-rules/ --diff ./evidence-after/
 ```
+</details>
+
+<details>
+<summary><b>Export — HTML, SIEM, SQLite, CSV</b></summary>
+
+```bash
+# HTML interactive report
+muninn -e ./evidence/ -r sigma-rules/ --gui report.html
+
+# Export for Splunk
+muninn -e ./evidence/ -r sigma-rules/ --template splunk --template-output detections.json
+
+# Export for ELK/OpenSearch
+muninn -e ./evidence/ -r sigma-rules/ --template elk --template-output detections.ndjson
+
+# Export for Timesketch
+muninn -e ./evidence/ -r sigma-rules/ --template timesketch --template-output timeline.jsonl
+
+# Export as CSV
+muninn -e ./evidence/ -r sigma-rules/ --template csv --template-output detections.csv
+
+# Export as SARIF (for GitHub Security tab, etc.)
+muninn -e ./evidence/ -r sigma-rules/ --template sarif --template-output results.sarif
+
+# Export SQLite database for custom queries
+muninn -e ./evidence/ --dbfile case.db
+sqlite3 case.db "SELECT \"Image\", COUNT(*) FROM events GROUP BY \"Image\" ORDER BY COUNT(*) DESC LIMIT 20"
+
+# Export flattened events as JSONL
+muninn -e ./evidence/ --keepflat events.jsonl
+
+# ATT&CK Navigator layer
+muninn -e ./evidence/ -r sigma-rules/ --navigator layer.json
+```
+</details>
+
+<details>
+<summary><b>Filtering — time, files, fields</b></summary>
+
+```bash
+# Time-based filtering (ISO 8601)
+muninn -e ./evidence/ -r sigma-rules/ --after "2025-01-15T00:00:00"
+muninn -e ./evidence/ -r sigma-rules/ --before "2025-01-16T00:00:00"
+muninn -e ./evidence/ -r sigma-rules/ --after "2025-01-15T08:00:00" --before "2025-01-15T18:00:00"
+
+# File selection by glob
+muninn -e ./evidence/ -s "*.evtx" -r sigma-rules/         # only EVTX
+muninn -e ./evidence/ -s "Security*" -r sigma-rules/       # only Security logs
+muninn -e ./evidence/ -a "*.csv" -r sigma-rules/           # exclude CSV files
+
+# Field mapping (rename fields across all events)
+muninn -e ./evidence/ -r sigma-rules/ --field-map mapping.yaml
+# mapping.yaml: { "EventID": "event_id", "SourceIp": "src_ip" }
+```
+</details>
+
+<details>
+<summary><b>Performance tuning</b></summary>
+
+```bash
+# Control parallelism
+muninn -e ./evidence/ -r sigma-rules/ --workers 4          # 4 threads
+muninn -e ./evidence/ -r sigma-rules/ --workers 16         # 16 threads
+
+# Limit memory usage
+muninn -e ./evidence/ -r sigma-rules/ --max-events 500000  # cap at 500K events
+muninn -e ./evidence/ -r sigma-rules/ --batch-size 100000  # larger batches
+
+# Create indexes for faster queries
+muninn -e ./evidence/ -r sigma-rules/ --add-index EventID --add-index Image
+
+# Per-file parallel processing
+muninn -e ./evidence/ -r sigma-rules/ --per-file
+```
+</details>
+
+<details>
+<summary><b>Interactive & live modes</b></summary>
+
+```bash
+# Interactive terminal UI (requires --features tui)
+muninn -e ./evidence/ -r sigma-rules/ --tui
+
+# Real-time monitoring (requires --features live)
+muninn -e /var/log/ -r sigma-rules/ --live
+
+# YAML config file (persist all settings)
+muninn --config muninn.yaml
+# muninn.yaml:
+#   events: ./evidence/
+#   rules: sigma-rules/
+#   min_level: medium
+#   stats: true
+#   timeline: true
+#   killchain: true
+#   threat_score: true
+```
+</details>
 
 ## Features
 
@@ -98,7 +324,7 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
 | | |
 |---|---|
 | **15+ formats** | EVTX, JSON, CSV, XML, Syslog, CEF, LEEF, Zeek, W3C, Auditd, macOS — auto-detected |
-| **3100+ SIGMA rules** | Full [SigmaHQ](https://github.com/SigmaHQ/sigma) ruleset included |
+| **3100+ SIGMA rules** | Full [SigmaHQ](https://github.com/SigmaHQ/sigma) ruleset — download with `--download-rules` |
 | **SIGMA compiler** | YAML → SQL with modifiers: `contains`, `endswith`, `startswith`, `re`, `base64`, `base64offset`, `windash`, `cidr`, `all`, `gt/gte/lt/lte` |
 | **Search engine** | SQLite-backed: keyword, field, regex, raw SQL |
 | **~6 MB binary** | Static, no runtime dependencies |
@@ -126,7 +352,7 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
 | **Time filter** | `--after` / `--before` | Filter events by timestamp |
 | **Rule profiling** | `--profile-rules` | Show rule execution time ranking |
 | **Config file** | `--config muninn.yaml` | YAML config for all settings |
-| **YAML config** | `--config file.yaml` | Persist settings in YAML |
+| **Rule download** | `--download-rules <SET>` | Download SIGMA rules from SigmaHQ (core, core+, all, emerging) |
 
 ### Export & Output
 
@@ -161,6 +387,7 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
 | **Archive support** | `--features archive` | Parse .gz/.zip/.bz2/.tar.gz files |
 | **Interactive TUI** | `--features tui` | Terminal UI with detection browser |
 | **Live monitoring** | `--features live` | Watch directory for new events in real-time |
+| **Rule download** | `--features download` | Download SIGMA rules from SigmaHQ releases |
 | **IOC enrichment** | `--features ioc-enrich` | VT/AbuseIPDB/OpenTIP API queries |
 
 ## Example Output
@@ -218,7 +445,7 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
   → muninn_report_2026-03-11_14-30-00.json
 ```
 
-## Search Examples
+## Forensic SQL Cookbook
 
 <details>
 <summary><b>Incident Response — lateral movement</b></summary>
@@ -227,11 +454,23 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
 # Remote logons (network + RDP)
 muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '4624' AND \"LogonType\" IN ('3','10')"
 
-# PsExec
+# PsExec detection
 muninn -e evidence/ -k "psexec"
 
 # Pass-the-hash
 muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '4624' AND \"LogonType\" = '3' AND \"AuthenticationPackageName\" = 'NTLM'"
+
+# WMI lateral movement
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"ParentImage\" LIKE '%wmiprvse.exe' AND \"EventID\" = '1'"
+
+# Remote service creation
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '7045' AND \"ServiceFileName\" LIKE '%\\\\%'"
+
+# RDP sessions
+muninn -e evidence/ --sql "SELECT \"TargetUserName\",\"IpAddress\",\"LogonType\" FROM events WHERE \"EventID\" = '4624' AND \"LogonType\" = '10'"
+
+# SMB file copies
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '5145' AND \"RelativeTargetName\" LIKE '%.exe'"
 ```
 </details>
 
@@ -243,13 +482,25 @@ muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '4624' AND \
 muninn -e evidence/ --regex "CommandLine=.*-[eE]nc[oO]?d?e?d?C?o?m?m?a?n?d?\s+[A-Za-z0-9+/=]{20,}"
 
 # LOLBins downloading files
-muninn -e evidence/ --sql "SELECT \"Image\",\"CommandLine\" FROM events WHERE \"CommandLine\" LIKE '%http%' AND (\"Image\" LIKE '%certutil%' OR \"Image\" LIKE '%mshta%' OR \"Image\" LIKE '%regsvr32%')"
+muninn -e evidence/ --sql "SELECT \"Image\",\"CommandLine\" FROM events WHERE \"CommandLine\" LIKE '%http%' AND (\"Image\" LIKE '%certutil%' OR \"Image\" LIKE '%mshta%' OR \"Image\" LIKE '%regsvr32%' OR \"Image\" LIKE '%bitsadmin%')"
 
 # Office spawning processes
-muninn -e evidence/ --sql "SELECT \"Image\",\"CommandLine\",\"ParentImage\" FROM events WHERE \"ParentImage\" LIKE '%WINWORD%' OR \"ParentImage\" LIKE '%EXCEL%' OR \"ParentImage\" LIKE '%OUTLOOK%'"
+muninn -e evidence/ --sql "SELECT \"Image\",\"CommandLine\",\"ParentImage\" FROM events WHERE \"ParentImage\" LIKE '%WINWORD%' OR \"ParentImage\" LIKE '%EXCEL%' OR \"ParentImage\" LIKE '%OUTLOOK%' OR \"ParentImage\" LIKE '%POWERPNT%'"
 
-# Reconnaissance
-muninn -e evidence/ --sql "SELECT \"CommandLine\",\"User\" FROM events WHERE \"Image\" LIKE '%whoami%' OR \"Image\" LIKE '%net.exe' OR \"Image\" LIKE '%ipconfig%' OR \"Image\" LIKE '%systeminfo%'"
+# Reconnaissance commands
+muninn -e evidence/ --sql "SELECT \"CommandLine\",\"User\",\"Image\" FROM events WHERE \"Image\" LIKE '%whoami%' OR \"Image\" LIKE '%net.exe' OR \"Image\" LIKE '%ipconfig%' OR \"Image\" LIKE '%systeminfo%' OR \"Image\" LIKE '%nltest%' OR \"Image\" LIKE '%tasklist%' OR \"Image\" LIKE '%qprocess%'"
+
+# Suspicious PowerShell downloads
+muninn -e evidence/ --sql "SELECT \"CommandLine\" FROM events WHERE \"CommandLine\" LIKE '%Invoke-WebRequest%' OR \"CommandLine\" LIKE '%wget%' OR \"CommandLine\" LIKE '%curl%' OR \"CommandLine\" LIKE '%DownloadString%' OR \"CommandLine\" LIKE '%DownloadFile%'"
+
+# Process injection indicators (Sysmon 8 — CreateRemoteThread)
+muninn -e evidence/ --sql "SELECT \"SourceImage\",\"TargetImage\" FROM events WHERE \"EventID\" = '8'"
+
+# Unsigned processes from temp
+muninn -e evidence/ --sql "SELECT \"Image\",\"CommandLine\" FROM events WHERE \"Image\" LIKE '%\\Temp\\%' OR \"Image\" LIKE '%\\tmp\\%' OR \"Image\" LIKE '%\\AppData\\%'"
+
+# Renamed system binaries
+muninn -e evidence/ --sql "SELECT \"Image\",\"OriginalFileName\",\"CommandLine\" FROM events WHERE \"OriginalFileName\" IS NOT NULL AND \"Image\" NOT LIKE '%\\' || \"OriginalFileName\""
 ```
 </details>
 
@@ -261,10 +512,19 @@ muninn -e evidence/ --sql "SELECT \"CommandLine\",\"User\" FROM events WHERE \"I
 muninn -e evidence/ --sql "SELECT \"CommandLine\" FROM events WHERE \"EventID\" = '1' AND \"CommandLine\" LIKE '%schtasks%create%'"
 
 # New services
-muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '7045'"
+muninn -e evidence/ --sql "SELECT \"ServiceName\",\"ImagePath\",\"ServiceType\" FROM events WHERE \"EventID\" = '7045'"
 
-# Registry Run keys
-muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '13' AND \"TargetObject\" LIKE '%\\Run\\%'"
+# Registry Run keys (Sysmon 13)
+muninn -e evidence/ --sql "SELECT \"Image\",\"TargetObject\",\"Details\" FROM events WHERE \"EventID\" = '13' AND \"TargetObject\" LIKE '%\\Run\\%'"
+
+# WMI event subscriptions
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" IN ('19','20','21')"
+
+# Startup folder file creation (Sysmon 11)
+muninn -e evidence/ --sql "SELECT \"Image\",\"TargetFilename\" FROM events WHERE \"EventID\" = '11' AND \"TargetFilename\" LIKE '%Startup%'"
+
+# DLL hijacking (Sysmon 7 — Image Load)
+muninn -e evidence/ --sql "SELECT \"Image\",\"ImageLoaded\" FROM events WHERE \"EventID\" = '7' AND \"Signed\" = 'false'"
 ```
 </details>
 
@@ -272,19 +532,31 @@ muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '13' AND \"T
 <summary><b>Credential Access</b></summary>
 
 ```bash
-# LSASS access
+# LSASS access (Sysmon 10)
 muninn -e evidence/ --sql "SELECT \"SourceImage\",\"GrantedAccess\" FROM events WHERE \"EventID\" = '10' AND \"TargetImage\" LIKE '%lsass.exe'"
 
-# Kerberoasting
+# Kerberoasting (TGS with RC4)
 muninn -e evidence/ --sql "SELECT \"TargetUserName\",\"ServiceName\",\"TicketEncryptionType\" FROM events WHERE \"EventID\" = '4769' AND \"TicketEncryptionType\" = '0x17'"
+
+# AS-REP Roasting
+muninn -e evidence/ --sql "SELECT \"TargetUserName\" FROM events WHERE \"EventID\" = '4768' AND \"TicketEncryptionType\" = '0x17'"
+
+# SAM database access
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '10' AND \"TargetImage\" LIKE '%\\lsass.exe' AND \"GrantedAccess\" IN ('0x1010','0x1038','0x1fffff')"
 
 # SSH brute force
 muninn -e auth.log -k "Invalid user" --stats
+
+# Failed logons
+muninn -e evidence/ --sql "SELECT \"TargetUserName\",\"IpAddress\",COUNT(*) as cnt FROM events WHERE \"EventID\" = '4625' GROUP BY \"TargetUserName\",\"IpAddress\" ORDER BY cnt DESC"
+
+# DCSync (directory replication)
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '4662' AND \"Properties\" LIKE '%1131f6ad%'"
 ```
 </details>
 
 <details>
-<summary><b>Network — external IPs & domains</b></summary>
+<summary><b>Network analysis — IPs, domains, C2</b></summary>
 
 ```bash
 # External IPs (exclude RFC1918)
@@ -299,39 +571,159 @@ muninn -e evidence/ --sql "
     AND \"DestinationIp\" NOT LIKE '192.168.%' AND \"DestinationIp\" NOT LIKE '127.%'
 "
 
-# C2 ports
+# C2 common ports
 muninn -e evidence/ --sql "
   SELECT \"DestinationIp\",\"DestinationPort\",\"Image\" FROM events
-  WHERE \"DestinationPort\" IN ('4444','5555','8080','8443','1337','9001')
+  WHERE \"DestinationPort\" IN ('4444','5555','8080','8443','1337','9001','6666','1234')
 "
 
 # Suspicious TLDs
 muninn -e evidence/ --sql "
   SELECT \"QueryName\",\"Image\" FROM events WHERE \"EventID\" = '22'
     AND (\"QueryName\" LIKE '%.xyz' OR \"QueryName\" LIKE '%.top' OR \"QueryName\" LIKE '%.tk'
-      OR \"QueryName\" LIKE '%.pw' OR \"QueryName\" LIKE '%.onion')
+      OR \"QueryName\" LIKE '%.pw' OR \"QueryName\" LIKE '%.onion' OR \"QueryName\" LIKE '%.bit')
 "
 
-# All unique domains
+# High-frequency DNS queries (possible beaconing)
+muninn -e evidence/ --sql "SELECT \"QueryName\", COUNT(*) as cnt FROM events WHERE \"EventID\" = '22' GROUP BY \"QueryName\" HAVING cnt > 100 ORDER BY cnt DESC"
+
+# Long DNS names (possible tunneling)
+muninn -e evidence/ --sql "SELECT \"QueryName\" FROM events WHERE \"EventID\" = '22' AND LENGTH(\"QueryName\") > 50"
+
+# Outbound connections by process
+muninn -e evidence/ --sql "SELECT \"Image\", COUNT(DISTINCT \"DestinationIp\") as ips FROM events WHERE \"EventID\" = '3' GROUP BY \"Image\" ORDER BY ips DESC LIMIT 20"
+
+# All unique external IPs
+muninn -e evidence/ --distinct DestinationIp
+
+# All unique DNS queries
 muninn -e evidence/ --distinct QueryName
 ```
 </details>
 
 <details>
-<summary><b>Data exploration</b></summary>
+<summary><b>Defense evasion</b></summary>
 
 ```bash
+# Sysmon config tampering
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '16'"
+
+# Log clearing
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" IN ('1102','104')"
+
+# Disable Windows Defender
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"CommandLine\" LIKE '%DisableRealtimeMonitoring%' OR \"CommandLine\" LIKE '%Set-MpPreference%'"
+
+# AMSI bypass attempts
+muninn -e evidence/ -k "AmsiUtils"
+muninn -e evidence/ --sql "SELECT \"CommandLine\" FROM events WHERE \"CommandLine\" LIKE '%amsi%bypass%' OR \"CommandLine\" LIKE '%AmsiInitFailed%'"
+
+# Timestomping (Sysmon 2 — FileCreateTime changed)
+muninn -e evidence/ --sql "SELECT \"Image\",\"TargetFilename\" FROM events WHERE \"EventID\" = '2'"
+
+# Process hollowing (Sysmon 25 — ProcessTampering)
+muninn -e evidence/ --sql "SELECT * FROM events WHERE \"EventID\" = '25'"
+```
+</details>
+
+<details>
+<summary><b>Linux & Cloud</b></summary>
+
+```bash
+# Linux — sudo abuse
+muninn -e /var/log/auth.log -k "sudo" --stats
+
+# Linux — SSH brute force
+muninn -e /var/log/auth.log --sql "SELECT * FROM events WHERE \"_raw\" LIKE '%Failed password%'"
+
+# Linux — cron persistence
+muninn -e /var/log/syslog -k "CRON" --stats
+
+# Linux — new users
+muninn -e /var/log/auth.log -k "useradd"
+
+# AWS CloudTrail — console login without MFA
+muninn -e cloudtrail/ --sql "SELECT * FROM events WHERE \"eventName\" = 'ConsoleLogin' AND \"additionalEventData\" NOT LIKE '%MFAUsed%Yes%'"
+
+# AWS — IAM changes
+muninn -e cloudtrail/ --sql "SELECT \"eventName\",\"userIdentity\",\"requestParameters\" FROM events WHERE \"eventSource\" = 'iam.amazonaws.com'"
+
+# Azure — risky sign-ins
+muninn -e azure-logs/ --sql "SELECT * FROM events WHERE \"riskState\" = 'atRisk'"
+
+# Zeek — DNS queries
+muninn -e zeek-logs/dns.log --distinct query
+muninn -e zeek-logs/dns.log --sql "SELECT \"query\", COUNT(*) as cnt FROM events GROUP BY \"query\" ORDER BY cnt DESC LIMIT 30"
+```
+</details>
+
+<details>
+<summary><b>Data exploration & export</b></summary>
+
+```bash
+# Field statistics
+muninn -e evidence/ --stats
 muninn -e evidence/ --distinct EventID
 muninn -e evidence/ --distinct Image
-muninn -e evidence/ --stats
+muninn -e evidence/ --distinct User
+muninn -e evidence/ --distinct Channel
+muninn -e evidence/ --distinct LogonType
+
+# Export to SQLite for advanced analysis
 muninn -e evidence/ --dbfile case.db
 sqlite3 case.db "SELECT \"Image\", COUNT(*) as cnt FROM events WHERE \"EventID\" = '1' GROUP BY \"Image\" ORDER BY cnt DESC LIMIT 20"
+sqlite3 case.db ".schema events"
+
+# Top processes by count
+muninn -e evidence/ --sql "SELECT \"Image\", COUNT(*) as cnt FROM events WHERE \"Image\" IS NOT NULL GROUP BY \"Image\" ORDER BY cnt DESC LIMIT 30"
+
+# Event timeline (hourly distribution)
+muninn -e evidence/ --sql "SELECT SUBSTR(\"SystemTime\",1,13) as hour, COUNT(*) as cnt FROM events WHERE \"SystemTime\" IS NOT NULL GROUP BY hour ORDER BY hour"
+
+# Users with most activity
+muninn -e evidence/ --sql "SELECT \"User\", COUNT(*) as cnt FROM events WHERE \"User\" IS NOT NULL GROUP BY \"User\" ORDER BY cnt DESC LIMIT 20"
+```
+</details>
+
+<details>
+<summary><b>Complete investigation workflow</b></summary>
+
+```bash
+# Step 1: Download rules
+muninn --download-rules all
+
+# Step 2: Quick triage
+muninn -e ./evidence/ -r sigma-rules/ --min-level high --stats
+
+# Step 3: Full analysis
+muninn -e ./evidence/ -r sigma-rules/ --stats --timeline --killchain --threat-score --anomalies --ioc-extract --correlate --gui report.html
+
+# Step 4: Export for SIEM ingestion
+muninn -e ./evidence/ -r sigma-rules/ --template splunk --template-output splunk-import.json
+
+# Step 5: Deep-dive with TUI
+muninn -e ./evidence/ -r sigma-rules/ --tui
+
+# Step 6: Export enriched IOCs
+muninn -e ./evidence/ --ioc-extract --vt-key YOUR_KEY -o ioc-report.json
+
+# Step 7: Compare before/after remediation
+muninn -e ./evidence-before/ -r sigma-rules/ --diff ./evidence-after/
 ```
 </details>
 
 ## SIGMA Rules
 
-3100+ rules from [SigmaHQ](https://github.com/SigmaHQ/sigma) included in `rules/`:
+3100+ rules from [SigmaHQ](https://github.com/SigmaHQ/sigma). Download directly or use your own:
+
+```bash
+# Download rules from SigmaHQ (requires --features download)
+muninn --download-rules all                    # all 3100+ rules → sigma-rules/
+muninn --download-rules core                   # curated core ruleset
+muninn --download-rules core+                  # core + extended
+muninn --download-rules emerging               # emerging threats addon
+muninn --download-rules all --rules-dir ./my-rules/  # custom output directory
+```
 
 | Category | Rules |
 |----------|-------|
@@ -345,10 +737,10 @@ sqlite3 case.db "SELECT \"Image\", COUNT(*) as cnt FROM events WHERE \"EventID\"
 | Identity | 24 |
 
 ```bash
-muninn -e events.json -r rules/                            # all rules
-muninn -e events.json -r rules/windows/process_creation/   # Windows process creation
-muninn -e events.json -r rules/linux/                      # Linux only
-muninn -e events.json -r rules/cloud/                      # cloud only
+muninn -e events.json -r sigma-rules/                            # all rules
+muninn -e events.json -r sigma-rules/rules/windows/process_creation/   # Windows process creation
+muninn -e events.json -r sigma-rules/rules/linux/                      # Linux only
+muninn -e events.json -r sigma-rules/rules/cloud/                      # cloud only
 ```
 
 <details>
@@ -435,6 +827,10 @@ PERFORMANCE:
       --remove-index <NAME>      Remove index by name
       --per-file                 Per-file parallel processing
 
+RULES DOWNLOAD (requires --features download):
+      --download-rules <SET>     Download SIGMA rules: core, core+, all, emerging
+      --rules-dir <PATH>         Output directory for downloaded rules [default: sigma-rules]
+
 MODE:
       --diff <PATH>              Compare with second evidence set
       --config <FILE>            YAML config file
@@ -484,10 +880,10 @@ engine.export_db("evidence.db")?;
 cargo build --release --features "all-parsers,cli"
 
 # Full build with all optional features
-cargo build --release --features "all-parsers,cli,archive,tui,live,ioc-enrich"
+cargo build --release --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 
 # Run tests
-cargo test --features "all-parsers,cli,archive,tui,live,ioc-enrich"
+cargo test --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 ```
 
 <details>
@@ -498,6 +894,7 @@ cargo test --features "all-parsers,cli,archive,tui,live,ioc-enrich"
 | `all-parsers` | All format parsers (default) |
 | `cli` | CLI binary |
 | `archive` | .gz/.zip/.bz2/.tar.gz support (flate2, zip, bzip2, tar) |
+| `download` | Download SIGMA rules from SigmaHQ releases (ureq, zip) |
 | `ioc-enrich` | IOC enrichment via VirusTotal, AbuseIPDB, OpenTIP (ureq) |
 | `tui` | Interactive terminal UI (ratatui, crossterm) |
 | `live` | Real-time directory monitoring (notify) |
@@ -595,8 +992,11 @@ Invoke-WebRequest -Uri "https://github.com/corax-security/muninn/releases/latest
 ### Быстрый старт
 
 ```bash
-# SIGMA-обнаружение с полным анализом
-muninn -e ./evidence/ -r rules/ --stats --timeline --killchain --threat-score
+# Скачать SIGMA-правила (один раз)
+muninn --download-rules all
+
+# Полный анализ
+muninn -e ./evidence/ -r sigma-rules/ --stats --timeline --killchain --threat-score
 
 # Поиск по ключевому слову
 muninn -e ./evidence/ -k "mimikatz"
@@ -608,10 +1008,17 @@ muninn -e ./evidence/ --ioc-extract --vt-key YOUR_API_KEY
 muninn -e ./evidence/ --anomalies
 
 # HTML-отчёт
-muninn -e ./evidence/ -r rules/ --gui report.html
+muninn -e ./evidence/ -r sigma-rules/ --gui report.html
 
 # Экспорт для SIEM
-muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.json
+muninn -e ./evidence/ -r sigma-rules/ --template splunk --template-output detections.json
+
+# Скачать разные наборы правил
+muninn --download-rules core                         # базовый набор
+muninn --download-rules core+                        # расширенный набор
+muninn --download-rules all                          # все 3100+ правил
+muninn --download-rules emerging                     # новые угрозы
+muninn --download-rules all --rules-dir ./my-rules/  # своя директория
 ```
 
 ### Возможности
@@ -621,7 +1028,7 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
 | | |
 |---|---|
 | **15+ форматов** | EVTX, JSON, CSV, XML, Syslog, CEF, LEEF, Zeek, W3C, Auditd, macOS — автоопределение |
-| **3100+ SIGMA-правил** | Полный набор [SigmaHQ](https://github.com/SigmaHQ/sigma) |
+| **3100+ SIGMA-правил** | Полный набор [SigmaHQ](https://github.com/SigmaHQ/sigma) — скачать через `--download-rules` |
 | **Компилятор SIGMA** | YAML → SQL с модификаторами: `contains`, `endswith`, `startswith`, `re`, `base64`, `base64offset`, `windash`, `cidr`, `all`, `gt/gte/lt/lte` |
 | **Поисковый движок** | На базе SQLite: ключевые слова, поля, регулярные выражения, SQL |
 | **~6 МБ бинарник** | Статический, без внешних зависимостей |
@@ -649,6 +1056,7 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
 | **Фильтр времени** | `--after` / `--before` | Фильтрация по метке времени |
 | **Профилирование правил** | `--profile-rules` | Рейтинг скорости выполнения правил |
 | **YAML-конфиг** | `--config muninn.yaml` | Все настройки в YAML-файле |
+| **Скачивание правил** | `--download-rules <SET>` | Скачивание SIGMA-правил из SigmaHQ (core, core+, all, emerging) |
 
 #### Экспорт
 
@@ -690,10 +1098,10 @@ muninn -e ./evidence/ -r rules/ --template splunk --template-output detections.j
 cargo build --release --features "all-parsers,cli"
 
 # Полная сборка со всеми опциональными фичами
-cargo build --release --features "all-parsers,cli,archive,tui,live,ioc-enrich"
+cargo build --release --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 
 # Запуск тестов
-cargo test --features "all-parsers,cli,archive,tui,live,ioc-enrich"
+cargo test --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 ```
 
 ### Лицензия
