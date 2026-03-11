@@ -1370,8 +1370,9 @@ fn main() -> Result<()> {
                     if let Some(&(tech_count, hit_count)) = tactic_hits.get(*tactic) {
                         let tactic_name = muninn::mitre::tactic_display_name(tactic);
                         let bar_len = ((hit_count as f64 / max_hits as f64) * 20.0) as usize;
-                        let bar_str: String = "█".repeat(bar_len.clamp(1, 20));
-                        let pad: String = " ".repeat(20 - bar_str.len());
+                        let bar_len = bar_len.clamp(1, 20);
+                        let bar_str: String = "█".repeat(bar_len);
+                        let pad: String = " ".repeat(20 - bar_len);
                         println!(
                             "  {:<24} {}{}  {} technique(s) ({} hits)",
                             tactic_name,
