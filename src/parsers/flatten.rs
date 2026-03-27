@@ -9,10 +9,114 @@ pub fn flatten_json(value: &Value, source_file: &str, format: SourceFormat) -> E
 
     let mut flat = HashMap::new();
     flatten_recursive(value, String::new(), &mut flat);
-    event.fields = flat;
 
+    // SIGMA field aliases: map flattened XML attribute paths to SIGMA-standard names.
+    // e.g., Provider_#attributes_Name → Provider_Name (used by SIGMA rules)
+    apply_sigma_aliases(&mut flat);
+
+    event.fields = flat;
     event.fields.insert("_raw".to_string(), event.raw.clone());
     event
+}
+
+/// Add SIGMA-compatible field aliases for Windows EVTX flattened fields.
+/// Maps EVTX JSON flattened paths to SIGMA-standard field names used by
+/// pysigma windows/sysmon pipelines. Aliases are added without removing
+/// originals so both forms work in SQL queries.
+fn apply_sigma_aliases(fields: &mut HashMap<String, String>) {
+    // System element aliases: XML attribute paths → short names
+    const SYSTEM_ALIASES: &[(&str, &str)] = &[
+        ("Provider_#attributes_Name", "Provider_Name"),
+        ("Provider_#attributes_Guid", "Provider_Guid"),
+        ("Execution_#attributes_ProcessID", "ExecutionProcessID"),
+        ("Execution_#attributes_ThreadID", "ExecutionThreadID"),
+        ("TimeCreated_#attributes_SystemTime", "TimeCreated"),
+        ("Security_#attributes_UserID", "SecurityUserID"),
+    ];
+
+    // Security EventID 4688 → SIGMA process_creation field mapping
+    // SIGMA uses Sysmon-style names; Security log uses different names
+    const SECURITY_4688_ALIASES: &[(&str, &str)] = &[
+        ("NewProcessName", "Image"),
+        ("ParentProcessName", "ParentImage"),
+        ("SubjectUserName", "User"),
+        ("SubjectUserSid", "UserSid"),
+        ("SubjectDomainName", "UserDomain"),
+        ("SubjectLogonId", "LogonId"),
+        ("NewProcessId", "ProcessId"),
+        ("CreatorProcessId", "ParentProcessId"),
+        ("TokenElevationType", "IntegrityLevel"),
+    ];
+
+    // Security logon (4624/4625) aliases
+    const LOGON_ALIASES: &[(&str, &str)] = &[
+        ("TargetUserName", "User"),
+        ("IpAddress", "SourceIp"),
+        ("IpPort", "SourcePort"),
+        ("WorkstationName", "Workstation"),
+    ];
+
+    // EventXML prefix removal (some EVTX parsers add EventXML_ prefix)
+    const EVENTXML_ALIASES: &[(&str, &str)] = &[
+        ("EventXML_ServiceName", "ServiceName"),
+        ("EventXML_Version", "ServiceVersion"),
+        ("EventXML_ImagePath", "ServiceImagePath"),
+        ("EventXML_Param1", "param1"),
+        ("EventXML_Param2", "param2"),
+        ("EventXML_Param3", "param3"),
+    ];
+
+    // Windows Defender specific field aliases
+    const DEFENDER_ALIASES: &[(&str, &str)] = &[
+        ("Threat Name", "ThreatName"),
+        ("Threat ID", "ThreatID"),
+        ("Detection Source", "DetectionSource"),
+        ("Process Name", "ProcessName"),
+        ("Detection User", "DetectionUser"),
+        ("Action Name", "ActionName"),
+        ("Severity Name", "SeverityName"),
+        ("Category Name", "CategoryName"),
+        ("FWLink", "FWLink"),
+        ("Path", "Path"),
+        ("Product Name", "ProductName"),
+        ("Product Version", "ProductVersion"),
+    ];
+
+    let mut to_add = Vec::new();
+
+    // Apply all alias tables
+    let tables: &[&[(&str, &str)]] = &[
+        SYSTEM_ALIASES,
+        SECURITY_4688_ALIASES,
+        LOGON_ALIASES,
+        EVENTXML_ALIASES,
+        DEFENDER_ALIASES,
+    ];
+    for table in tables {
+        for &(long, short) in *table {
+            if let Some(val) = fields.get(long) {
+                if !fields.contains_key(&short.to_string()) {
+                    to_add.push((short.to_string(), val.clone()));
+                }
+            }
+        }
+    }
+
+    // Also strip "EventXML_" prefix for any remaining EventXML_ fields
+    let eventxml_fields: Vec<(String, String)> = fields
+        .iter()
+        .filter(|(k, _)| k.starts_with("EventXML_") && !k.contains("#attributes"))
+        .map(|(k, v)| (k[9..].to_string(), v.clone()))
+        .collect();
+    for (short, val) in eventxml_fields {
+        if !fields.contains_key(&short) {
+            to_add.push((short, val));
+        }
+    }
+
+    for (k, v) in to_add {
+        fields.insert(k, v);
+    }
 }
 
 fn flatten_recursive(value: &Value, prefix: String, out: &mut HashMap<String, String>) {

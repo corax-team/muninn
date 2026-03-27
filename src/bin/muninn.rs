@@ -225,10 +225,7 @@ struct Cli {
     #[arg(long = "max-events", help = "Maximum events to load (memory control)")]
     max_events: Option<usize>,
 
-    #[arg(
-        long = "workers",
-        help = "Number of parallel workers (default: CPU cores)"
-    )]
+    #[arg(long = "workers", help = "Number of parallel workers (default: 4)")]
     workers: Option<usize>,
 
     #[arg(
@@ -246,6 +243,34 @@ struct Detection {
     author: String,
     tags: Vec<String>,
     result: muninn::SearchResult,
+    confidence: String,
+}
+
+fn compute_confidence(
+    rule: &muninn::sigma::Rule,
+    rows: &[std::collections::HashMap<String, String>],
+) -> String {
+    let service = match rule.logsource.service.as_deref() {
+        Some(s) if !s.is_empty() => s.to_lowercase(),
+        _ => return "high".to_string(),
+    };
+
+    let expected = match muninn::sigma::expected_channel_for_service(&service) {
+        Some(ch) => ch.to_lowercase(),
+        None => return "high".to_string(),
+    };
+
+    let mismatched = rows.iter().any(|row| {
+        row.get("Channel")
+            .map(|ch| ch.to_lowercase() != expected)
+            .unwrap_or(false)
+    });
+
+    if mismatched {
+        "low".to_string()
+    } else {
+        "high".to_string()
+    }
 }
 
 fn level_rank(level: &str) -> u8 {
@@ -271,7 +296,8 @@ fn level_color(level: &str) -> colored::ColoredString {
 
 fn main() -> Result<()> {
     env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Warn)
+        .filter_level(log::LevelFilter::Error)
+        .filter_module("muninn", log::LevelFilter::Warn)
         .init();
     let mut cli = Cli::parse();
 
@@ -550,12 +576,19 @@ fn main() -> Result<()> {
         println!();
     }
 
-    let files = parsers::discover_files(
+    let mut files = parsers::discover_files(
         &cli.events,
         cli.select.as_deref(),
         cli.avoid.as_deref(),
         true,
     )?;
+
+    // Sort files largest-first so big files start early and don't overlap at the end
+    files.sort_by(|a, b| {
+        let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
+        let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
+        sb.cmp(&sa)
+    });
 
     if files.is_empty() {
         if !cli.quiet {
@@ -564,11 +597,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Pre-compute file sizes for progress tracking
+    let file_sizes: Vec<u64> = files
+        .iter()
+        .map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0))
+        .collect();
+    let total_size_bytes: u64 = file_sizes.iter().sum();
+
     let pb = if !cli.quiet {
-        let pb = ProgressBar::new(files.len() as u64);
+        let pb = ProgressBar::new(total_size_bytes);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("  {spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} files | {msg}")
+                .template(
+                    "  {spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) | {msg}",
+                )
                 .unwrap()
                 .progress_chars("█▉▊▋▌▍▎▏ "),
         );
@@ -597,13 +639,17 @@ fn main() -> Result<()> {
         None
     };
 
-    // Configure thread pool for parallel operations
-    if let Some(workers) = cli.workers {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .build_global()
-            .ok(); // ignore if already initialized
-    }
+    // Configure thread pool: default to half of available cores (min 1, max 4)
+    let workers = cli.workers.unwrap_or_else(|| {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        (cpus / 2).clamp(1, 4)
+    });
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build_global()
+        .ok();
 
     let batch_size = cli.batch_size.unwrap_or(50_000);
     let max_events = cli.max_events;
@@ -615,127 +661,409 @@ fn main() -> Result<()> {
         std::collections::HashMap::new();
     let mut parse_errors: Vec<String> = Vec::new();
 
-    // Phase 1: Parse files in parallel with rayon
+    // Determine if unified SQLite engine is needed (for search/SQL/anomaly features)
+    let needs_unified_engine = cli.keyword.is_some()
+        || cli.field_search.is_some()
+        || cli.sql.is_some()
+        || cli.sql_file.is_some()
+        || cli.regex_search.is_some()
+        || cli.distinct.is_some()
+        || cli.dbfile.is_some()
+        || cli.anomalies.is_some()
+        || !cli.add_index.is_empty()
+        || !cli.remove_index.is_empty()
+        || cli.keepflat.is_some()
+        || cli.after.is_some()
+        || cli.before.is_some();
+
+    // Pre-compile SIGMA rules if provided (needed before streaming)
+    let compiled_rules: Option<Vec<(muninn::sigma::Rule, String)>> =
+        if let Some(ref rules_path) = cli.rules {
+            let mut rules = sigma::load_rules(rules_path)
+                .context(format!("Failed to load SIGMA rules from {:?}", rules_path))?;
+            let min_rank = level_rank(&cli.min_level);
+
+            if !cli.rulefilter.is_empty() {
+                let before_count = rules.len();
+                rules.retain(|r| {
+                    !cli.rulefilter
+                        .iter()
+                        .any(|pat| r.title.to_lowercase().contains(&pat.to_lowercase()))
+                });
+                if !cli.quiet && rules.len() < before_count {
+                    println!(
+                        "  {} Filtered {} rules (excluded {})",
+                        "✓".green(),
+                        rules.len(),
+                        before_count - rules.len()
+                    );
+                }
+            }
+
+            if !cli.quiet {
+                println!(
+                    "  {} {} SIGMA rules loaded",
+                    "[+]".green().bold(),
+                    rules.len().to_string().bold()
+                );
+            }
+
+            let compile_start = Instant::now();
+            let compiled: Vec<_> = {
+                use rayon::prelude::*;
+                rules
+                    .par_iter()
+                    .filter(|r| level_rank(&r.level) >= min_rank)
+                    .filter_map(|r| match sigma::compile(r) {
+                        Ok(sql) => Some((r.clone(), sql)),
+                        Err(e) => {
+                            log::debug!("Rule '{}' compile error: {}", r.title, e);
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            if !cli.quiet && compiled.len() > 50 {
+                println!(
+                    "  {} Pre-compiled {} rules in {:.0}ms",
+                    "✓".green(),
+                    compiled.len(),
+                    compile_start.elapsed().as_millis()
+                );
+            }
+            Some(compiled)
+        } else {
+            None
+        };
+
+    // Streaming pipeline: parse + SIGMA + stats per file, free memory after each
     let do_transforms = cli.transforms;
     let do_hashes = cli.hashes;
+    let do_stats = cli.stats;
 
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let progress_counter = AtomicUsize::new(0);
+    use std::sync::Mutex;
 
-    let parsed_results: Vec<(PathBuf, Result<muninn::ParseResult, String>)> = files
+    let field_counts: Mutex<HashMap<String, usize>> = Mutex::new(HashMap::new());
+    let atomic_total_events = AtomicUsize::new(0);
+    let sigma_limit = cli.limit;
+    let pb_ref = &pb;
+    let file_sizes_ref = &file_sizes;
+
+    // Per-file results: (file_path, event_count, format, detections, parse_error)
+    type FileResult = (
+        PathBuf,
+        usize,
+        Option<String>,
+        Vec<Detection>,
+        Option<String>,
+    );
+
+    let file_results: Vec<FileResult> = files
         .par_iter()
-        .map(|file| {
-            let result = parsers::parse_file(file);
-            // Update progress (atomic for thread safety)
-            progress_counter.fetch_add(1, Ordering::Relaxed);
-            match result {
-                Ok(mut pr) => {
-                    // Apply field mapping (per-event, parallelizable)
-                    if let Some(ref fmap) = field_map {
-                        for ev in &mut pr.events {
-                            ev.apply_field_map(fmap);
-                        }
-                    }
-                    // Apply transforms
-                    if do_transforms {
-                        muninn::transforms::apply_transforms(
-                            &mut pr.events,
-                            &muninn::transforms::default_transforms(),
-                        );
-                    }
-                    // Compute hashes
-                    if do_hashes {
-                        for ev in &mut pr.events {
-                            ev.compute_hash();
-                        }
-                    }
-                    // Apply early event filter
-                    if let Some(ref filter) = event_filter {
-                        pr.events.retain(|ev| filter.matches(ev));
-                    }
-                    (file.clone(), Ok(pr))
-                }
-                Err(e) => {
-                    let msg = format!(
-                        "{}: {}",
-                        file.file_name().unwrap_or_default().to_string_lossy(),
-                        e
-                    );
-                    (file.clone(), Err(msg))
-                }
-            }
-        })
-        .collect();
-
-    // Phase 2: Load parsed results into SearchEngine sequentially (SQLite is single-threaded)
-    let total_parsed = parsed_results.len();
-    for (i, (_file, result)) in parsed_results.into_iter().enumerate() {
-        if let Some(ref pb) = pb {
-            let name = _file
+        .enumerate()
+        .map(|(file_idx, file)| {
+            let fname = file
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            pb.set_message(format!("Loading {}", name));
-            pb.set_position((i + 1) as u64);
-        }
-        match result {
-            Ok(pr) => {
-                let original_count = pr.events.len();
-                let events_to_load = if let Some(max) = max_events {
-                    if total_events >= max {
-                        continue; // skip remaining files
+            let file_size = file_sizes_ref[file_idx];
+
+            if let Some(ref bar) = pb_ref {
+                bar.set_message(fname.clone());
+            }
+
+            // Detect format to decide streaming vs batch
+            let format = parsers::detect_format(file).ok();
+            let is_evtx = matches!(format, Some(muninn::model::SourceFormat::Evtx));
+            let format_name = format
+                .as_ref()
+                .map(|f| f.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            // Helper: process a batch of events (transforms, hashes, filter, stats)
+            let process_batch = |batch: &mut Vec<muninn::model::Event>| {
+                if let Some(ref fmap) = field_map {
+                    for ev in batch.iter_mut() {
+                        ev.apply_field_map(fmap);
                     }
-                    let remaining = max - total_events;
-                    if pr.events.len() > remaining {
-                        pr.events[..remaining].to_vec()
-                    } else {
-                        pr.events
+                }
+                if do_transforms {
+                    muninn::transforms::apply_transforms(
+                        batch,
+                        &muninn::transforms::default_transforms(),
+                    );
+                }
+                if do_hashes {
+                    for ev in batch.iter_mut() {
+                        ev.compute_hash();
                     }
-                } else {
-                    pr.events
+                }
+                if let Some(ref filter) = event_filter {
+                    batch.retain(|ev| filter.matches(ev));
+                }
+                if do_stats {
+                    let mut local_counts: HashMap<String, usize> = HashMap::new();
+                    for ev in batch.iter() {
+                        for (k, v) in &ev.fields {
+                            if !v.is_empty() {
+                                *local_counts.entry(k.clone()).or_default() += 1;
+                            }
+                        }
+                    }
+                    if let Ok(mut global) = field_counts.lock() {
+                        for (k, c) in local_counts {
+                            *global.entry(k).or_default() += c;
+                        }
+                    }
+                }
+            };
+
+            // Create per-file SIGMA engine if rules are provided
+            let mut file_engine = if compiled_rules.is_some() {
+                match SearchEngine::new() {
+                    Ok(e) => Some(e),
+                    Err(_) => {
+                        if let Some(ref bar) = pb_ref {
+                            bar.inc(file_size);
+                        }
+                        return (file.clone(), 0, Some(format_name), Vec::new(), None);
+                    }
+                }
+            } else {
+                None
+            };
+
+            let mut event_count = 0usize;
+
+            if is_evtx {
+                // STREAMING path for EVTX: never hold all events in RAM
+                let rx = match muninn::parsers::evtx::parse_streaming(file) {
+                    Ok(rx) => rx,
+                    Err(e) => {
+                        let msg = format!("{}: {}", fname, e);
+                        if let Some(ref bar) = pb_ref {
+                            bar.inc(file_size);
+                        }
+                        return (file.clone(), 0, Some(format_name), Vec::new(), Some(msg));
+                    }
                 };
 
-                // Track filtered events (difference from early filter)
-                if event_filter.is_some() {
-                    // We don't know the pre-filter count here since filtering happened in parallel,
-                    // but we can track that some were loaded
+                let mut batch: Vec<muninn::model::Event> = Vec::with_capacity(batch_size);
+                for ev in rx {
+                    // Check max_events
+                    if let Some(max) = max_events {
+                        if atomic_total_events.load(Ordering::Relaxed) >= max {
+                            break;
+                        }
+                    }
+                    batch.push(ev);
+                    if batch.len() >= batch_size {
+                        process_batch(&mut batch);
+                        event_count += batch.len();
+                        atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
+                        if let Some(ref mut eng) = file_engine {
+                            let _ = eng.load_events(&batch);
+                        }
+                        batch.clear();
+                    }
+                }
+                // Flush remaining
+                if !batch.is_empty() {
+                    process_batch(&mut batch);
+                    event_count += batch.len();
+                    atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
+                    if let Some(ref mut eng) = file_engine {
+                        let _ = eng.load_events(&batch);
+                    }
+                }
+            } else {
+                // BATCH path for non-EVTX (typically small files)
+                let mut pr = match parsers::parse_file(file) {
+                    Ok(pr) => pr,
+                    Err(e) => {
+                        let msg = format!("{}: {}", fname, e);
+                        if let Some(ref bar) = pb_ref {
+                            bar.inc(file_size);
+                        }
+                        return (file.clone(), 0, None, Vec::new(), Some(msg));
+                    }
+                };
+
+                // Apply max_events limit
+                if let Some(max) = max_events {
+                    let current = atomic_total_events.load(Ordering::Relaxed);
+                    if current >= max {
+                        if let Some(ref bar) = pb_ref {
+                            bar.inc(file_size);
+                        }
+                        return (file.clone(), 0, Some(format_name), Vec::new(), None);
+                    }
+                    let remaining = max - current;
+                    if pr.events.len() > remaining {
+                        pr.events.truncate(remaining);
+                    }
                 }
 
-                let n = events_to_load.len();
-                *format_stats
-                    .entry(pr.source_format.to_string())
-                    .or_default() += n;
+                process_batch(&mut pr.events);
+                event_count = pr.events.len();
+                atomic_total_events.fetch_add(event_count, Ordering::Relaxed);
 
-                // Load in batches for memory control
+                if let Some(ref mut eng) = file_engine {
+                    let _ = eng.load_events(&pr.events);
+                }
+                drop(pr);
+            }
+
+            // Run SIGMA rules
+            let detections = if let Some(ref mut eng) = file_engine {
+                let _ = eng.create_indexes();
+                let mut file_detections = Vec::new();
+                if let Some(ref compiled) = compiled_rules {
+                    for (rule, sql) in compiled {
+                        let effective_limit = sigma_limit.unwrap_or(200);
+                        let query_result = eng.query_sql_with_limit(sql, effective_limit);
+                        if let Ok(r) = query_result {
+                            if r.count > 0 {
+                                let confidence = compute_confidence(rule, &r.rows);
+                                file_detections.push(Detection {
+                                    title: rule.title.clone(),
+                                    level: rule.level.clone(),
+                                    description: rule.description.clone(),
+                                    id: rule.id.clone(),
+                                    author: rule.author.clone(),
+                                    tags: rule.tags.clone(),
+                                    result: r,
+                                    confidence,
+                                });
+                            }
+                        }
+                    }
+                }
+                file_detections
+            } else {
+                Vec::new()
+            };
+
+            if let Some(ref bar) = pb_ref {
+                bar.inc(file_size);
+            }
+
+            (
+                file.clone(),
+                event_count,
+                Some(format_name),
+                detections,
+                None,
+            )
+        })
+        .collect();
+
+    // Aggregate results from streaming pipeline
+    for (_file, count, fmt, _, err) in &file_results {
+        if let Some(ref msg) = err {
+            parse_errors.push(msg.clone());
+            if !cli.quiet {
+                eprintln!("  {} {}", "✗".red(), msg);
+            }
+        }
+        if let Some(ref f) = fmt {
+            *format_stats.entry(f.clone()).or_default() += count;
+        }
+        total_events += count;
+    }
+
+    // Merge SIGMA detections by rule title
+    let mut results: Vec<Detection> = Vec::new();
+    if compiled_rules.is_some() {
+        let mut merged: HashMap<String, Detection> = HashMap::new();
+        for (_, _, _, detections, _) in file_results {
+            for det in detections {
+                let entry = merged.entry(det.title.clone()).or_insert(Detection {
+                    title: det.title.clone(),
+                    level: det.level.clone(),
+                    description: det.description.clone(),
+                    id: det.id.clone(),
+                    author: det.author.clone(),
+                    tags: det.tags.clone(),
+                    result: muninn::SearchResult {
+                        rows: Vec::new(),
+                        count: 0,
+                        query: det.result.query.clone(),
+                        duration_ms: 0,
+                    },
+                    confidence: det.confidence.clone(),
+                });
+                // Any low-confidence file → merged detection is low
+                if det.confidence == "low" {
+                    entry.confidence = "low".to_string();
+                }
+                entry.result.count += det.result.count;
+                entry.result.duration_ms += det.result.duration_ms;
+                if entry.result.rows.len() < 200 {
+                    let take = (200 - entry.result.rows.len()).min(det.result.rows.len());
+                    entry
+                        .result
+                        .rows
+                        .extend(det.result.rows.into_iter().take(take));
+                }
+            }
+        }
+        results = merged.into_values().collect();
+
+        if !cli.quiet {
+            println!(
+                "  {} Executing ruleset: {} rules matched across {} files\n",
+                "[+]".green().bold(),
+                results.len().to_string().bold(),
+                files.len()
+            );
+        }
+    }
+
+    // Load unified engine only if features require it (sequential, after streaming)
+    if needs_unified_engine {
+        if !cli.quiet {
+            println!("  {} Loading events into search engine...", "▶".cyan());
+        }
+        for file in &files {
+            let is_evtx = file
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("evtx"));
+            if is_evtx {
+                // Streaming for EVTX to avoid OOM
+                if let Ok(rx) = muninn::parsers::evtx::parse_streaming(file) {
+                    let mut batch = Vec::with_capacity(batch_size);
+                    for ev in rx {
+                        batch.push(ev);
+                        if batch.len() >= batch_size {
+                            engine.load_events(&batch)?;
+                            batch.clear();
+                        }
+                    }
+                    if !batch.is_empty() {
+                        engine.load_events(&batch)?;
+                    }
+                }
+            } else if let Ok(pr) = parsers::parse_file(file) {
+                let n = pr.events.len();
                 if n > batch_size {
-                    for chunk in events_to_load.chunks(batch_size) {
+                    for chunk in pr.events.chunks(batch_size) {
                         engine.load_events(chunk)?;
                     }
                 } else {
-                    engine.load_events(&events_to_load)?;
-                }
-                total_events += n;
-
-                // Track filtered count (rough — filter ran in parallel)
-                let _ = original_count; // original_count == n since filter already applied
-            }
-            Err(msg) => {
-                parse_errors.push(msg.clone());
-                if !cli.quiet {
-                    if let Some(ref pb) = pb {
-                        pb.suspend(|| {
-                            eprintln!("  {} {}", "✗".red(), msg);
-                        });
-                    }
+                    engine.load_events(&pr.events)?;
                 }
             }
         }
     }
 
     if let Some(pb) = pb {
-        pb.set_position(total_parsed as u64);
+        pb.set_position(total_size_bytes);
         pb.finish_and_clear();
     }
 
@@ -844,10 +1172,7 @@ fn main() -> Result<()> {
                 total_events as f64
             }
         );
-        if cli.per_file {
-            println!("    {} DB Mode     {}", "[>]".cyan(), "PER-FILE".bold());
-        }
-        let worker_count = cli.workers.unwrap_or_else(rayon::current_num_threads);
+        let worker_count = workers;
         println!(
             "    {} Workers     {} threads",
             "[>]".cyan(),
@@ -871,10 +1196,11 @@ fn main() -> Result<()> {
     }
 
     if cli.stats {
-        let s = engine.stats()?;
+        // Stats computed during streaming pipeline
+        let fc = field_counts.into_inner().unwrap_or_default();
         println!("\n  {:<40} {}", "Field".bold(), "Count".bold());
         println!("  {}", "─".repeat(52));
-        let mut fields: Vec<_> = s.populated_fields.iter().collect();
+        let mut fields: Vec<_> = fc.iter().collect();
         fields.sort_by(|a, b| b.1.cmp(a.1));
         for (name, count) in fields.iter().take(30) {
             if name.starts_with('_') {
@@ -883,7 +1209,7 @@ fn main() -> Result<()> {
             println!("  {:<40} {}", name, count);
         }
         println!("  {}", "─".repeat(52));
-        println!("  {} fields, {} events\n", s.total_fields, s.total_events);
+        println!("  {} fields, {} events\n", fc.len(), total_events);
     }
 
     if let Some(ref field) = cli.distinct {
@@ -895,215 +1221,7 @@ fn main() -> Result<()> {
         println!();
     }
 
-    let mut results: Vec<Detection> = Vec::new();
-    let min_rank = level_rank(&cli.min_level);
-
-    if let Some(ref rules_path) = cli.rules {
-        let mut rules = sigma::load_rules(rules_path)
-            .context(format!("Failed to load SIGMA rules from {:?}", rules_path))?;
-
-        // Apply rule filters
-        if !cli.rulefilter.is_empty() {
-            let before_count = rules.len();
-            rules.retain(|r| {
-                !cli.rulefilter
-                    .iter()
-                    .any(|pat| r.title.to_lowercase().contains(&pat.to_lowercase()))
-            });
-            if !cli.quiet && rules.len() < before_count {
-                println!(
-                    "  {} Filtered {} rules (excluded {})",
-                    "✓".green(),
-                    rules.len(),
-                    before_count - rules.len()
-                );
-            }
-        }
-
-        if !cli.quiet {
-            println!(
-                "  {} {} SIGMA rules loaded",
-                "[+]".green().bold(),
-                rules.len().to_string().bold()
-            );
-            if !cli.rulefilter.is_empty() {
-                println!("  {} Event filter enabled", "[+]".green().bold());
-            }
-        }
-
-        if cli.per_file {
-            // Per-file mode: process each file in its own SearchEngine via rayon
-            use rayon::prelude::*;
-
-            if !cli.quiet {
-                println!(
-                    "  {} Per-file mode: processing {} files in parallel",
-                    "▶".cyan(),
-                    files.len()
-                );
-            }
-
-            // Pre-compile rules to SQL
-            let compiled: Vec<_> = rules
-                .iter()
-                .filter(|r| level_rank(&r.level) >= min_rank)
-                .filter_map(|r| sigma::compile(r).ok().map(|sql| (r.clone(), sql)))
-                .collect();
-
-            // Process files in parallel
-            let per_file_results: Vec<Vec<Detection>> = files
-                .par_iter()
-                .filter_map(|file| {
-                    let mut file_engine = SearchEngine::new().ok()?;
-                    let result = parsers::parse_file(file).ok()?;
-                    file_engine.load_events(&result.events).ok()?;
-                    let _ = file_engine.create_indexes();
-
-                    let mut file_detections = Vec::new();
-                    for (rule, sql) in &compiled {
-                        let query_result = if let Some(limit) = cli.limit {
-                            file_engine.query_sql_with_limit(sql, limit)
-                        } else {
-                            file_engine.query_sql(sql)
-                        };
-                        if let Ok(r) = query_result {
-                            if r.count > 0 {
-                                file_detections.push(Detection {
-                                    title: rule.title.clone(),
-                                    level: rule.level.clone(),
-                                    description: rule.description.clone(),
-                                    id: rule.id.clone(),
-                                    author: rule.author.clone(),
-                                    tags: rule.tags.clone(),
-                                    result: r,
-                                });
-                            }
-                        }
-                    }
-                    Some(file_detections)
-                })
-                .collect();
-
-            // Merge: aggregate detections by rule title
-            let mut merged: HashMap<String, Detection> = HashMap::new();
-            for file_dets in per_file_results {
-                for det in file_dets {
-                    let entry = merged.entry(det.title.clone()).or_insert(Detection {
-                        title: det.title.clone(),
-                        level: det.level.clone(),
-                        description: det.description.clone(),
-                        id: det.id.clone(),
-                        author: det.author.clone(),
-                        tags: det.tags.clone(),
-                        result: muninn::SearchResult {
-                            rows: Vec::new(),
-                            count: 0,
-                            query: det.result.query.clone(),
-                            duration_ms: 0,
-                        },
-                    });
-                    entry.result.count += det.result.count;
-                    entry.result.duration_ms += det.result.duration_ms;
-                    entry.result.rows.extend(det.result.rows);
-                }
-            }
-            results = merged.into_values().collect();
-
-            let matched = results.len();
-            if !cli.quiet {
-                println!(
-                    "  {} Executing ruleset (per-file): {} rules matched\n",
-                    "[+]".green().bold(),
-                    matched.to_string().bold()
-                );
-            }
-        } else {
-            // Standard mode: single unified SearchEngine
-            // Step 1: Pre-compile all rules to SQL in parallel
-            let compile_start = Instant::now();
-            let compiled: Vec<_> = {
-                use rayon::prelude::*;
-                rules
-                    .par_iter()
-                    .filter(|r| level_rank(&r.level) >= min_rank)
-                    .filter_map(|r| match sigma::compile(r) {
-                        Ok(sql) => Some((r.clone(), sql)),
-                        Err(e) => {
-                            log::debug!("Rule '{}' compile error: {}", r.title, e);
-                            None
-                        }
-                    })
-                    .collect()
-            };
-
-            if !cli.quiet && compiled.len() > 50 {
-                println!(
-                    "  {} Pre-compiled {} rules in {:.0}ms",
-                    "✓".green(),
-                    compiled.len(),
-                    compile_start.elapsed().as_millis()
-                );
-            }
-
-            // Step 2: Execute compiled queries sequentially (SQLite single-connection)
-            let sigma_pb = if !cli.quiet && compiled.len() > 50 {
-                let pb = ProgressBar::new(compiled.len() as u64);
-                pb.set_style(
-                    ProgressStyle::default_bar()
-                        .template(
-                            "  {spinner:.green} [{bar:40.magenta/blue}] {pos}/{len} rules | {msg}",
-                        )
-                        .unwrap()
-                        .progress_chars("█▉▊▋▌▍▎▏ "),
-                );
-                Some(pb)
-            } else {
-                None
-            };
-
-            let mut matched = 0;
-            for (rule, sql) in &compiled {
-                if let Some(ref pb) = sigma_pb {
-                    pb.set_message(rule.title.chars().take(50).collect::<String>());
-                    pb.inc(1);
-                }
-
-                let query_result = if let Some(limit) = cli.limit {
-                    engine.query_sql_with_limit(sql, limit)
-                } else {
-                    engine.query_sql(sql)
-                };
-                match query_result {
-                    Ok(r) if r.count > 0 => {
-                        matched += 1;
-                        results.push(Detection {
-                            title: rule.title.clone(),
-                            level: rule.level.clone(),
-                            description: rule.description.clone(),
-                            id: rule.id.clone(),
-                            author: rule.author.clone(),
-                            tags: rule.tags.clone(),
-                            result: r,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(e) => log::debug!("Rule '{}' SQL error: {}", rule.title, e),
-                }
-            }
-
-            if let Some(pb) = sigma_pb {
-                pb.finish_and_clear();
-            }
-
-            if !cli.quiet {
-                println!(
-                    "  {} Executing ruleset: {} rules matched\n",
-                    "[+]".green().bold(),
-                    matched.to_string().bold()
-                );
-            }
-        }
-
+    if compiled_rules.is_some() {
         // Profile rules: show sorted execution time table
         if cli.profile_rules && !cli.quiet && !results.is_empty() {
             let mut profile: Vec<(&str, u64, usize)> = results
@@ -1161,6 +1279,7 @@ fn main() -> Result<()> {
                     author: String::new(),
                     tags: Vec::new(),
                     result: r,
+                    confidence: "high".into(),
                 }),
                 Ok(_) => {}
                 Err(e) => {
@@ -1182,6 +1301,7 @@ fn main() -> Result<()> {
             author: String::new(),
             tags: Vec::new(),
             result: r,
+            confidence: "high".into(),
         });
     }
 
@@ -1195,6 +1315,7 @@ fn main() -> Result<()> {
             author: String::new(),
             tags: Vec::new(),
             result: r,
+            confidence: "high".into(),
         });
     }
 
@@ -1209,6 +1330,7 @@ fn main() -> Result<()> {
                 author: String::new(),
                 tags: Vec::new(),
                 result: r,
+                confidence: "high".into(),
             });
         }
     }
@@ -1224,6 +1346,7 @@ fn main() -> Result<()> {
                 author: String::new(),
                 tags: Vec::new(),
                 result: r,
+                confidence: "high".into(),
             });
         }
     }
@@ -1284,11 +1407,16 @@ fn main() -> Result<()> {
 
                 let title_display: String = d.title.chars().take(50).collect();
                 let mitre_display: String = mitre_str.chars().take(12).collect();
+                let sev_display = if d.confidence == "low" {
+                    format!("{}~", level_color(&d.level))
+                } else {
+                    level_color(&d.level).to_string()
+                };
 
                 println!(
                     "  {} {:<12} {} {:<50} {} {:>6} {} {:<12} {}",
                     "│".cyan(),
-                    level_color(&d.level),
+                    sev_display,
                     "│".cyan(),
                     title_display,
                     "│".cyan(),
@@ -1641,15 +1769,83 @@ fn main() -> Result<()> {
         // Mini-GUI HTML report
         if let Some(ref gui_path) = cli.gui {
             let total_matches: usize = results.iter().map(|d| d.result.count).sum();
+            const GUI_EVENT_LIMIT: usize = 50;
+            const GUI_VALUE_MAX: usize = 500;
+            const GUI_FIELDS: &[&str] = &[
+                "SystemTime",
+                "timestamp",
+                "@timestamp",
+                "TimeCreated",
+                "UtcTime",
+                "EventTime",
+                "date",
+                "_time",
+                "time",
+                "datetime",
+                "EventID",
+                "Channel",
+                "Computer",
+                "User",
+                "LogonType",
+                "Image",
+                "ParentImage",
+                "CommandLine",
+                "ParentCommandLine",
+                "ProcessId",
+                "ParentProcessId",
+                "TargetObject",
+                "TargetFilename",
+                "SourceIp",
+                "DestinationIp",
+                "SourcePort",
+                "DestinationPort",
+                "ServiceName",
+                "ServiceFileName",
+                "hostname",
+                "app_name",
+                "message",
+                "level",
+                "src_ip",
+                "dst_ip",
+                "_source_file",
+            ];
             let gui_data: Vec<_> = results
                 .iter()
                 .map(|d| {
+                    let limited_rows: Vec<HashMap<String, String>> = d
+                        .result
+                        .rows
+                        .iter()
+                        .take(GUI_EVENT_LIMIT)
+                        .map(|row| {
+                            row.iter()
+                                .filter(|(k, _)| {
+                                    GUI_FIELDS.iter().any(|f| f.eq_ignore_ascii_case(k))
+                                })
+                                .map(|(k, v)| {
+                                    let truncated = if v.len() > GUI_VALUE_MAX {
+                                        format!(
+                                            "{}...[truncated {} chars]",
+                                            &v[..GUI_VALUE_MAX],
+                                            v.len() - GUI_VALUE_MAX
+                                        )
+                                    } else {
+                                        v.clone()
+                                    };
+                                    (k.clone(), truncated)
+                                })
+                                .collect()
+                        })
+                        .collect();
                     (
                         d.title.clone(),
                         d.level.clone(),
                         d.result.count,
                         d.tags.clone(),
-                        d.result.rows.clone(),
+                        limited_rows,
+                        d.description.clone(),
+                        d.id.clone(),
+                        d.confidence.clone(),
                     )
                 })
                 .collect();
@@ -1830,6 +2026,9 @@ fn main() -> Result<()> {
                     }
                     if !mitre_techniques.is_empty() {
                         det["mitre"] = serde_json::json!(mitre_techniques);
+                    }
+                    if !d.confidence.is_empty() {
+                        det["confidence"] = serde_json::json!(d.confidence);
                     }
                     det
                 }).collect::<Vec<_>>(),

@@ -4,7 +4,7 @@ pub mod archive;
 mod auditd;
 mod cef;
 mod csv_tsv;
-mod evtx;
+pub mod evtx;
 mod flatten;
 mod json;
 mod leef;

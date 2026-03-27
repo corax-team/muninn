@@ -45,9 +45,11 @@ impl SearchEngine {
         conn.execute_batch(
             "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = OFF;
-             PRAGMA cache_size = -131072;
+             PRAGMA cache_size = -262144;
              PRAGMA temp_store = MEMORY;
-             PRAGMA mmap_size = 268435456;",
+             PRAGMA mmap_size = 536870912;
+             PRAGMA page_size = 32768;
+             PRAGMA locking_mode = EXCLUSIVE;",
         )?;
 
         register_regexp(&conn)?;
@@ -138,18 +140,15 @@ impl SearchEngine {
             placeholders.join(", ")
         );
 
-        let mut stmt = tx.prepare(&insert_sql)?;
+        let mut stmt = tx.prepare_cached(&insert_sql)?;
         let mut loaded = 0;
+        let empty = String::new();
 
         for ev in events {
-            let values: Vec<String> = self
+            let params: Vec<&dyn rusqlite::types::ToSql> = self
                 .columns
                 .iter()
-                .map(|col| ev.fields.get(col).cloned().unwrap_or_default())
-                .collect();
-            let params: Vec<&dyn rusqlite::types::ToSql> = values
-                .iter()
-                .map(|v| v as &dyn rusqlite::types::ToSql)
+                .map(|col| -> &dyn rusqlite::types::ToSql { ev.fields.get(col).unwrap_or(&empty) })
                 .collect();
             if stmt.execute(params.as_slice()).is_ok() {
                 loaded += 1;
