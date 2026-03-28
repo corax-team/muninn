@@ -207,6 +207,25 @@ fn is_filepath_field(name: &str) -> bool {
     )
 }
 
+/// Returns true if this field is known to hold domain names.
+fn is_domain_field(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "queryname"
+            | "destinationhostname"
+            | "sourcehostname"
+            | "r-dns"
+            | "query"
+            | "host"
+            | "server_name"
+            | "sni"
+            | "domain"
+    ) || lower.contains("hostname")
+        || lower.contains("domainname")
+        || lower.contains("fqdn")
+}
+
 /// Returns true if this field is known to hold registry keys.
 fn is_registry_field(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -472,6 +491,27 @@ impl IocCollector {
                             .record(ts, src, field_name);
                     }
                 }
+                // Domains from DNS/domain-specific fields
+                if is_domain_field(field_name) {
+                    for cap in self.domain_re.captures_iter(field_value) {
+                        let domain = cap[1].to_lowercase();
+                        if psl::List.suffix(domain.as_bytes()).is_none() {
+                            continue;
+                        }
+                        if !is_noise_domain(&domain) {
+                            let key = (IocType::Domain, domain);
+                            if !self.entries.contains_key(&key)
+                                && self.entries.len() >= self.max_entries
+                            {
+                                continue;
+                            }
+                            self.entries
+                                .entry(key)
+                                .or_insert_with(IocState::new)
+                                .record(ts, src, field_name);
+                        }
+                    }
+                }
             }
 
             // ── Other IOCs: from all fields + raw ──
@@ -556,22 +596,37 @@ impl IocCollector {
                     .record(ts, source_file, "");
             }
         }
-        // Domains — use PSL (Mozilla Public Suffix List) for validation
-        for cap in self.domain_re.captures_iter(text) {
-            let domain = cap[1].to_lowercase();
-            // Validate via PSL: only real domains with known TLDs
-            if psl::List.suffix(domain.as_bytes()).is_none() {
-                continue;
-            }
-            if !is_noise_domain(&domain) {
-                let key = (IocType::Domain, domain);
-                if !self.entries.contains_key(&key) && self.entries.len() >= self.max_entries {
+        // Domains — extract from URLs only (not raw text, to avoid .NET namespaces etc.)
+        // Field-aware domain extraction from DNS/domain fields is done above in process_events()
+        for m in self.url_re.find_iter(text) {
+            let url = m.as_str();
+            // Extract hostname from URL: after :// and before / or : or end
+            if let Some(host_start) = url.find("://") {
+                let host_part = &url[host_start + 3..];
+                let host_end = host_part
+                    .find('/')
+                    .or_else(|| host_part.find(':'))
+                    .or_else(|| host_part.find('?'))
+                    .unwrap_or(host_part.len());
+                let host = &host_part[..host_end];
+                // Skip IP-based URLs (already handled by IP extraction)
+                if host.chars().next().map_or(true, |c| c.is_ascii_digit()) {
                     continue;
                 }
-                self.entries
-                    .entry(key)
-                    .or_insert_with(IocState::new)
-                    .record(ts, source_file, "");
+                let domain = host.to_lowercase();
+                if domain.len() >= 4
+                    && psl::List.suffix(domain.as_bytes()).is_some()
+                    && !is_noise_domain(&domain)
+                {
+                    let key = (IocType::Domain, domain);
+                    if !self.entries.contains_key(&key) && self.entries.len() >= self.max_entries {
+                        continue;
+                    }
+                    self.entries
+                        .entry(key)
+                        .or_insert_with(IocState::new)
+                        .record(ts, source_file, "");
+                }
             }
         }
     }
