@@ -329,13 +329,19 @@ impl OpenTipClient {
         }
 
         let checked = progress.load(std::sync::atomic::Ordering::Relaxed);
+        let was_stopped = stopped.load(std::sync::atomic::Ordering::Relaxed);
         if !quiet {
-            println!("  Checked {} IOCs", checked);
-            if checked >= 1800 {
+            if was_stopped {
+                let skipped = total.saturating_sub(checked);
                 eprintln!(
-                    "  [!] Approaching daily quota: {} requests used (limit: 2000)",
-                    checked
+                    "  [!] OpenTIP daily quota exhausted after {} checks. {} IOCs were NOT checked.",
+                    checked, skipped
                 );
+                eprintln!(
+                    "  [!] Quota resets daily. Re-run tomorrow or use --opentip-types to prioritize."
+                );
+            } else {
+                println!("  Checked {} IOCs", checked);
             }
         }
 
@@ -531,7 +537,17 @@ fn format_number(n: u64) -> String {
     result.chars().rev().collect()
 }
 
+/// Render full report (for file output).
 pub fn render_opentip_report(results: &[OpenTipResult]) -> String {
+    render_opentip_inner(results, false)
+}
+
+/// Render console report — only RED/ORANGE/YELLOW + summary.
+pub fn render_opentip_console(results: &[OpenTipResult]) -> String {
+    render_opentip_inner(results, true)
+}
+
+fn render_opentip_inner(results: &[OpenTipResult], console_only: bool) -> String {
     if results.is_empty() {
         return "  No OpenTIP results.\n".into();
     }
@@ -541,6 +557,10 @@ pub fn render_opentip_report(results: &[OpenTipResult]) -> String {
     output.push_str(&format!("  {}\n\n", "\u{2550}".repeat(56)));
 
     for r in results {
+        // Console mode: skip GREEN and GREY (clean/unknown)
+        if console_only && matches!(r.zone, Zone::Green | Zone::Grey) {
+            continue;
+        }
         output.push_str(&format!("  [{}] {} {}\n", r.zone, r.ioc_type, r.value));
 
         match &r.details {

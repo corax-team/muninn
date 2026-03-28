@@ -610,7 +610,7 @@ impl IocCollector {
                     .unwrap_or(host_part.len());
                 let host = &host_part[..host_end];
                 // Skip IP-based URLs (already handled by IP extraction)
-                if host.chars().next().map_or(true, |c| c.is_ascii_digit()) {
+                if host.chars().next().is_none_or(|c| c.is_ascii_digit()) {
                     continue;
                 }
                 let domain = host.to_lowercase();

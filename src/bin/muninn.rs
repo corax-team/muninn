@@ -2448,7 +2448,9 @@ fn main() -> Result<()> {
             if !opentip_results.is_empty() {
                 let report = muninn::opentip::render_opentip_report(&opentip_results);
                 if !cli.quiet {
-                    print!("{}", report);
+                    // Console: show only threats (RED/ORANGE/YELLOW), not clean/unknown
+                    let console_report = muninn::opentip::render_opentip_console(&opentip_results);
+                    print!("{}", console_report);
                 }
                 // Save text report
                 let opentip_txt = ioc_path.with_extension("opentip.txt");
