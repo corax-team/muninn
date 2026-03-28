@@ -2446,32 +2446,38 @@ fn main() -> Result<()> {
             let opentip_results =
                 client.check_iocs(&iocs, cli.opentip_max, cli.quiet, &cli.opentip_types);
             if !opentip_results.is_empty() {
+                // Save reports
                 let report = muninn::opentip::render_opentip_report(&opentip_results);
-                if !cli.quiet {
-                    // Console: show only threats (RED/ORANGE/YELLOW), not clean/unknown
-                    let console_report = muninn::opentip::render_opentip_console(&opentip_results);
-                    print!("{}", console_report);
-                }
-                // Save text report
                 let opentip_txt = ioc_path.with_extension("opentip.txt");
                 save_report(&opentip_txt, "OpenTIP Report", &report, &opentip_results)?;
-                // Save HTML report
                 let opentip_html_path = ioc_path.with_extension("opentip.html");
-                let html = muninn::opentip::render_opentip_html(&opentip_results);
-                std::fs::write(&opentip_html_path, &html)?;
-                // Save JSON report
+                std::fs::write(
+                    &opentip_html_path,
+                    muninn::opentip::render_opentip_html(&opentip_results),
+                )?;
                 let opentip_json = ioc_path.with_extension("opentip.json");
                 std::fs::write(
                     &opentip_json,
                     serde_json::to_string_pretty(&opentip_results)?,
                 )?;
+                // Console: one-line summary
                 if !cli.quiet {
+                    let (mut red, mut orange, mut yellow, mut green, mut grey) =
+                        (0usize, 0, 0, 0, 0);
+                    for r in &opentip_results {
+                        match r.zone {
+                            muninn::opentip::Zone::Red => red += 1,
+                            muninn::opentip::Zone::Orange => orange += 1,
+                            muninn::opentip::Zone::Yellow => yellow += 1,
+                            muninn::opentip::Zone::Green => green += 1,
+                            muninn::opentip::Zone::Grey => grey += 1,
+                        }
+                    }
                     println!(
-                        "  {} OpenTIP report \u{2192} {:?}, {:?}, {:?}",
-                        "\u{2713}".green(),
-                        opentip_txt,
-                        opentip_html_path,
-                        opentip_json
+                        "  {} OpenTIP: {} checked \u{2014} {} RED, {} ORANGE, {} YELLOW, {} GREEN, {} GREY \u{2192} {:?}",
+                        "\u{2713}".green(), opentip_results.len(),
+                        red, orange, yellow, green, grey,
+                        opentip_html_path
                     );
                 }
             }
