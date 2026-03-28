@@ -5,9 +5,22 @@ use quick_xml::Reader;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Escape a string for safe inclusion in an XML attribute value (double-quoted).
+fn xml_escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 pub fn parse(path: &Path, source_file: &str) -> Result<Vec<Event>> {
-    let content = std::fs::read_to_string(path)?;
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
     let mut events = Vec::new();
+
+    // Read via BufReader to avoid holding both raw bytes and a String simultaneously.
+    let mut content = String::new();
+    std::io::Read::read_to_string(&mut reader, &mut content)?;
 
     if content.contains("<Event>") || content.contains("<Event ") {
         let mut reader = Reader::from_str(&content);
@@ -35,7 +48,7 @@ pub fn parse(path: &Path, source_file: &str) -> Result<Vec<Event>> {
                             event_xml.push(' ');
                             event_xml.push_str(&akey);
                             event_xml.push_str("=\"");
-                            event_xml.push_str(&aval);
+                            event_xml.push_str(&xml_escape_attr(&aval));
                             event_xml.push('"');
                         }
                         event_xml.push('>');
@@ -76,7 +89,7 @@ pub fn parse(path: &Path, source_file: &str) -> Result<Vec<Event>> {
                             event_xml.push(' ');
                             event_xml.push_str(&akey);
                             event_xml.push_str("=\"");
-                            event_xml.push_str(&aval);
+                            event_xml.push_str(&xml_escape_attr(&aval));
                             event_xml.push('"');
                         }
                         event_xml.push_str("/>");

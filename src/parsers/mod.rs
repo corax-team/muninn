@@ -45,9 +45,13 @@ pub fn detect_format(path: &Path) -> Result<SourceFormat> {
         return Ok(SourceFormat::Evtx);
     }
 
-    let sample = std::fs::read_to_string(path)
-        .map(|s| s.chars().take(8192).collect::<String>())
-        .unwrap_or_default();
+    let sample = {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)?;
+        let mut buf = vec![0u8; 8192];
+        let n = file.read(&mut buf)?;
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    };
     let trimmed = sample.trim();
     let first = trimmed.lines().next().unwrap_or("");
 

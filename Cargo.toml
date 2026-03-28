@@ -49,6 +49,7 @@ rusqlite = { version = "0.31", features = ["bundled", "functions", "backup"] }
 
 # Hashing
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
+sha2 = "0.10"
 
 # Base64 for SIGMA modifiers
 base64 = "0.22"

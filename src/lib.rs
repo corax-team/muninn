@@ -7,9 +7,11 @@ pub mod anomaly;
 pub mod correlate;
 pub mod diff;
 pub mod ioc;
+pub mod login;
 pub mod mitre;
 pub mod output;
 pub mod scoring;
+pub mod summary;
 pub mod timeline;
 pub mod transforms;
 

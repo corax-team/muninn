@@ -82,13 +82,10 @@ fn compile_logsource(ls: &super::parser::LogSource) -> Option<String> {
     }
 
     // Catch-all category-based channel constraints (non-Windows specific)
-    match category.as_str() {
-        "antivirus" => {
-            return Some(
-                "(\"Channel\" LIKE '%Defender%' OR \"Channel\" LIKE '%Virus%' OR \"Channel\" LIKE '%Endpoint%' OR \"Channel\" LIKE '%Antivirus%')".into(),
-            )
-        }
-        _ => {}
+    if category.as_str() == "antivirus" {
+        return Some(
+            "(\"Channel\" LIKE '%Defender%' OR \"Channel\" LIKE '%Virus%' OR \"Channel\" LIKE '%Endpoint%' OR \"Channel\" LIKE '%Antivirus%')".into(),
+        );
     }
 
     None
@@ -432,7 +429,7 @@ fn cidr_to_sql(qf: &str, cidr: &str) -> String {
     let full_octets = (mask_bits / 8) as usize;
 
     // Octet-aligned: simple LIKE prefix
-    if mask_bits % 8 == 0 {
+    if mask_bits.is_multiple_of(8) {
         let prefix: Vec<String> = octets[..full_octets]
             .iter()
             .map(|o| o.to_string())
@@ -501,14 +498,19 @@ fn to_like(s: &str, contains: bool, startswith: bool, endswith: bool) -> String 
 }
 
 fn escape(s: &str) -> String {
-    s.replace('\'', "''")
+    s.replace('\\', "\\\\").replace('\'', "''")
 }
 
 fn parse_condition(cond: &str, fragments: &HashMap<String, String>) -> Result<String> {
     let mut expr = cond.trim().to_string();
 
     let of_re = Regex::new(r"(\d+|all)\s+of\s+(\w+\*|them)").unwrap();
+    let mut iterations = 0;
     while let Some(caps) = of_re.captures(&expr.clone()) {
+        iterations += 1;
+        if iterations > 100 {
+            anyhow::bail!("SIGMA condition expansion exceeded 100 iterations");
+        }
         let full = caps.get(0).unwrap().as_str();
         let quant = caps.get(1).unwrap().as_str();
         let target = caps.get(2).unwrap().as_str();
@@ -524,8 +526,21 @@ fn parse_condition(cond: &str, fragments: &HashMap<String, String>) -> Result<St
             "1=0".into()
         } else {
             let parts: Vec<String> = keys.iter().map(|k| fragments[*k].clone()).collect();
-            let joiner = if quant == "all" { " AND " } else { " OR " };
-            format!("({})", parts.join(joiner))
+            if quant == "all" {
+                format!("({})", parts.join(" AND "))
+            } else {
+                let n: usize = quant.parse().unwrap_or(1);
+                if n <= 1 {
+                    format!("({})", parts.join(" OR "))
+                } else {
+                    // N of selection*: at least N selections must match
+                    let case_parts: Vec<String> = parts
+                        .iter()
+                        .map(|p| format!("CASE WHEN ({}) THEN 1 ELSE 0 END", p))
+                        .collect();
+                    format!("({} >= {})", case_parts.join(" + "), n)
+                }
+            }
         };
         expr = expr.replace(full, &replacement);
     }
@@ -1017,6 +1032,45 @@ detection:
         assert!(
             !sql.contains("LIKE '%%'"),
             "Should not generate match-all pattern, got: {}",
+            sql
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn test_n_of_selections() {
+        let sql = compile_yaml(
+            r#"
+title: Test N of selections
+level: high
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_a:
+    CommandLine|contains: 'whoami'
+  selection_b:
+    CommandLine|contains: 'ipconfig'
+  selection_c:
+    CommandLine|contains: 'net user'
+  condition: 2 of selection*
+"#,
+        );
+        // Must use CASE/SUM approach, requiring at least 2 matches
+        assert!(
+            sql.contains("CASE WHEN"),
+            "Expected CASE WHEN for N-of, got: {}",
+            sql
+        );
+        assert!(
+            sql.contains(">= 2"),
+            "Expected >= 2 threshold, got: {}",
+            sql
+        );
+        // Should NOT be a simple OR (that would match if any 1 matches)
+        assert!(
+            !sql.contains(" OR ") || sql.contains("CASE WHEN"),
+            "Should not use simple OR for 2-of, got: {}",
             sql
         );
         assert_valid_sql(&sql);

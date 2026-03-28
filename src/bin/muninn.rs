@@ -3,11 +3,33 @@ use chrono::Local;
 use clap::Parser;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use muninn::{parsers, search::SearchEngine, sigma};
+
+#[derive(serde::Serialize, Clone)]
+struct SourceFile {
+    path: String,
+    sha256: String,
+    size_bytes: u64,
+}
+
+fn hash_file_sha256(path: &std::path::Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 #[derive(serde::Deserialize, Default)]
 #[allow(dead_code)]
@@ -170,6 +192,13 @@ struct Cli {
     #[arg(long = "ioc-extract", help = "Extract IOCs from events and save to file", default_missing_value = "auto", num_args = 0..=1)]
     ioc_extract: Option<PathBuf>,
 
+    #[arg(
+        long = "ioc-max",
+        help = "Maximum number of unique IOCs to track (default: 100000)",
+        default_value = "100000"
+    )]
+    ioc_max: usize,
+
     #[arg(long = "vt-key", help = "VirusTotal API key for IOC enrichment")]
     vt_key: Option<String>,
 
@@ -191,6 +220,12 @@ struct Cli {
 
     #[arg(long = "correlate", help = "Correlate events into attack chains and save to file", default_missing_value = "auto", num_args = 0..=1)]
     correlate: Option<PathBuf>,
+
+    #[arg(long = "login-analysis", help = "Analyze login events (4624/4625/4672) and save report", default_missing_value = "auto", num_args = 0..=1)]
+    login_analysis: Option<PathBuf>,
+
+    #[arg(long = "summary", help = "Generate executive incident assessment summary", default_missing_value = "auto", num_args = 0..=1)]
+    summary: Option<PathBuf>,
 
     #[arg(
         long = "per-file",
@@ -491,6 +526,20 @@ fn main() -> Result<()> {
         cli.threat_score = Some(PathBuf::from(format!("muninn_scores_{}.txt", ts)));
     }
     if cli
+        .login_analysis
+        .as_ref()
+        .is_some_and(|p| p.as_os_str() == "auto")
+    {
+        cli.login_analysis = Some(PathBuf::from(format!("muninn_logins_{}.txt", ts)));
+    }
+    if cli
+        .summary
+        .as_ref()
+        .is_some_and(|p| p.as_os_str() == "auto")
+    {
+        cli.summary = Some(PathBuf::from(format!("muninn_summary_{}.txt", ts)));
+    }
+    if cli
         .template_output
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
@@ -583,6 +632,38 @@ fn main() -> Result<()> {
         true,
     )?;
 
+    // Extract archives and discover log files inside them
+    #[cfg(feature = "archive")]
+    let _archive_temps: Vec<tempfile::TempDir> = {
+        let mut temps = Vec::new();
+        let mut extra_files = Vec::new();
+        let archive_paths: Vec<_> = files
+            .iter()
+            .filter(|f| parsers::archive::is_archive(f))
+            .cloned()
+            .collect();
+        for archive_path in &archive_paths {
+            match parsers::archive::extract_to_temp(archive_path) {
+                Ok((tmp_dir, extracted)) => {
+                    log::info!(
+                        "Extracted {} files from {:?}",
+                        extracted.len(),
+                        archive_path
+                    );
+                    extra_files.extend(extracted);
+                    temps.push(tmp_dir);
+                }
+                Err(e) => {
+                    log::warn!("Failed to extract archive {:?}: {}", archive_path, e);
+                }
+            }
+        }
+        // Remove archive files from the file list and add extracted files
+        files.retain(|f| !parsers::archive::is_archive(f));
+        files.extend(extra_files);
+        temps
+    };
+
     // Sort files largest-first so big files start early and don't overlap at the end
     files.sort_by(|a, b| {
         let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
@@ -595,6 +676,32 @@ fn main() -> Result<()> {
             println!("  {} No log files found in {:?}", "✗".red(), cli.events);
         }
         return Ok(());
+    }
+
+    // Evidence integrity: SHA-256 hash all source files
+    let source_files: Vec<SourceFile> = files
+        .iter()
+        .filter_map(|f| {
+            let size_bytes = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+            match hash_file_sha256(f) {
+                Ok(sha256) => Some(SourceFile {
+                    path: f.to_string_lossy().to_string(),
+                    sha256,
+                    size_bytes,
+                }),
+                Err(e) => {
+                    log::warn!("Failed to hash {:?}: {}", f, e);
+                    None
+                }
+            }
+        })
+        .collect();
+    if !cli.quiet {
+        println!(
+            "  {} Evidence integrity: {} files hashed (SHA-256)",
+            "\u{2713}".green(),
+            source_files.len()
+        );
     }
 
     // Pre-compute file sizes for progress tracking
@@ -674,7 +781,8 @@ fn main() -> Result<()> {
         || !cli.remove_index.is_empty()
         || cli.keepflat.is_some()
         || cli.after.is_some()
-        || cli.before.is_some();
+        || cli.before.is_some()
+        || cli.login_analysis.is_some();
 
     // Pre-compile SIGMA rules if provided (needed before streaming)
     let compiled_rules: Option<Vec<(muninn::sigma::Rule, String)>> =
@@ -741,6 +849,8 @@ fn main() -> Result<()> {
     let do_transforms = cli.transforms;
     let do_hashes = cli.hashes;
     let do_stats = cli.stats;
+    let do_ioc_extract = cli.ioc_extract.is_some();
+    let ioc_max = cli.ioc_max;
 
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -752,13 +862,14 @@ fn main() -> Result<()> {
     let pb_ref = &pb;
     let file_sizes_ref = &file_sizes;
 
-    // Per-file results: (file_path, event_count, format, detections, parse_error)
+    // Per-file results: (file_path, event_count, format, detections, parse_error, ioc_collector)
     type FileResult = (
         PathBuf,
         usize,
         Option<String>,
         Vec<Detection>,
         Option<String>,
+        Option<muninn::ioc::IocCollector>,
     );
 
     let file_results: Vec<FileResult> = files
@@ -830,7 +941,7 @@ fn main() -> Result<()> {
                         if let Some(ref bar) = pb_ref {
                             bar.inc(file_size);
                         }
-                        return (file.clone(), 0, Some(format_name), Vec::new(), None);
+                        return (file.clone(), 0, Some(format_name), Vec::new(), None, None);
                     }
                 }
             } else {
@@ -838,6 +949,11 @@ fn main() -> Result<()> {
             };
 
             let mut event_count = 0usize;
+            let mut ioc_collector = if do_ioc_extract {
+                Some(muninn::ioc::IocCollector::with_max_entries(ioc_max))
+            } else {
+                None
+            };
 
             if is_evtx {
                 // STREAMING path for EVTX: never hold all events in RAM
@@ -848,9 +964,19 @@ fn main() -> Result<()> {
                         if let Some(ref bar) = pb_ref {
                             bar.inc(file_size);
                         }
-                        return (file.clone(), 0, Some(format_name), Vec::new(), Some(msg));
+                        return (
+                            file.clone(),
+                            0,
+                            Some(format_name),
+                            Vec::new(),
+                            Some(msg),
+                            None,
+                        );
                     }
                 };
+
+                // Track progress within file: estimate bytes from event count
+                let mut reported_bytes: u64 = 0;
 
                 let mut batch: Vec<muninn::model::Event> = Vec::with_capacity(batch_size);
                 for ev in rx {
@@ -863,10 +989,21 @@ fn main() -> Result<()> {
                     batch.push(ev);
                     if batch.len() >= batch_size {
                         process_batch(&mut batch);
+                        if let Some(ref mut col) = ioc_collector {
+                            col.process_events(&batch);
+                        }
                         event_count += batch.len();
                         atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
                         if let Some(ref mut eng) = file_engine {
                             let _ = eng.load_events(&batch);
+                        }
+                        // Incremental progress: estimate bytes from raw sizes
+                        if let Some(ref bar) = pb_ref {
+                            let batch_bytes: u64 =
+                                batch.iter().map(|e| e.raw.len() as u64 + 200).sum();
+                            let increment = batch_bytes.min(file_size - reported_bytes);
+                            bar.inc(increment);
+                            reported_bytes += increment;
                         }
                         batch.clear();
                     }
@@ -874,10 +1011,19 @@ fn main() -> Result<()> {
                 // Flush remaining
                 if !batch.is_empty() {
                     process_batch(&mut batch);
+                    if let Some(ref mut col) = ioc_collector {
+                        col.process_events(&batch);
+                    }
                     event_count += batch.len();
                     atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
                     if let Some(ref mut eng) = file_engine {
                         let _ = eng.load_events(&batch);
+                    }
+                }
+                // Correct to exact file size
+                if let Some(ref bar) = pb_ref {
+                    if reported_bytes < file_size {
+                        bar.inc(file_size - reported_bytes);
                     }
                 }
             } else {
@@ -889,7 +1035,7 @@ fn main() -> Result<()> {
                         if let Some(ref bar) = pb_ref {
                             bar.inc(file_size);
                         }
-                        return (file.clone(), 0, None, Vec::new(), Some(msg));
+                        return (file.clone(), 0, None, Vec::new(), Some(msg), None);
                     }
                 };
 
@@ -900,7 +1046,7 @@ fn main() -> Result<()> {
                         if let Some(ref bar) = pb_ref {
                             bar.inc(file_size);
                         }
-                        return (file.clone(), 0, Some(format_name), Vec::new(), None);
+                        return (file.clone(), 0, Some(format_name), Vec::new(), None, None);
                     }
                     let remaining = max - current;
                     if pr.events.len() > remaining {
@@ -909,6 +1055,9 @@ fn main() -> Result<()> {
                 }
 
                 process_batch(&mut pr.events);
+                if let Some(ref mut col) = ioc_collector {
+                    col.process_events(&pr.events);
+                }
                 event_count = pr.events.len();
                 atomic_total_events.fetch_add(event_count, Ordering::Relaxed);
 
@@ -948,8 +1097,11 @@ fn main() -> Result<()> {
                 Vec::new()
             };
 
-            if let Some(ref bar) = pb_ref {
-                bar.inc(file_size);
+            // Non-EVTX: report full file size at once (EVTX already reported incrementally)
+            if !is_evtx {
+                if let Some(ref bar) = pb_ref {
+                    bar.inc(file_size);
+                }
             }
 
             (
@@ -958,12 +1110,14 @@ fn main() -> Result<()> {
                 Some(format_name),
                 detections,
                 None,
+                ioc_collector,
             )
         })
         .collect();
 
     // Aggregate results from streaming pipeline
-    for (_file, count, fmt, _, err) in &file_results {
+    let mut merged_ioc_collector: Option<muninn::ioc::IocCollector> = None;
+    for (_file, count, fmt, _, err, _) in &file_results {
         if let Some(ref msg) = err {
             parse_errors.push(msg.clone());
             if !cli.quiet {
@@ -976,11 +1130,18 @@ fn main() -> Result<()> {
         total_events += count;
     }
 
-    // Merge SIGMA detections by rule title
-    let mut results: Vec<Detection> = Vec::new();
-    if compiled_rules.is_some() {
+    // Merge SIGMA detections and IOC collectors from per-file results
+    let mut results: Vec<Detection>;
+    {
         let mut merged: HashMap<String, Detection> = HashMap::new();
-        for (_, _, _, detections, _) in file_results {
+        for (_, _, _, detections, _, file_ioc) in file_results {
+            // Merge IOC collectors
+            if let Some(col) = file_ioc {
+                match merged_ioc_collector {
+                    Some(ref mut m) => m.merge(col),
+                    None => merged_ioc_collector = Some(col),
+                }
+            }
             for det in detections {
                 let entry = merged.entry(det.title.clone()).or_insert(Detection {
                     title: det.title.clone(),
@@ -1014,7 +1175,7 @@ fn main() -> Result<()> {
         }
         results = merged.into_values().collect();
 
-        if !cli.quiet {
+        if compiled_rules.is_some() && !cli.quiet {
             println!(
                 "  {} Executing ruleset: {} rules matched across {} files\n",
                 "[+]".green().bold(),
@@ -1332,6 +1493,8 @@ fn main() -> Result<()> {
                 result: r,
                 confidence: "high".into(),
             });
+        } else {
+            anyhow::bail!("--field requires format FIELD=PATTERN, got: {:?}", fs);
         }
     }
 
@@ -1348,6 +1511,8 @@ fn main() -> Result<()> {
                 result: r,
                 confidence: "high".into(),
             });
+        } else {
+            anyhow::bail!("--regex requires format FIELD=PATTERN, got: {:?}", rs);
         }
     }
 
@@ -1878,9 +2043,64 @@ fn main() -> Result<()> {
         }
     }
 
-    // IOC Extraction (independent of SIGMA results)
+    // Login Analysis (requires unified engine with Security events)
+    if let Some(ref login_path) = cli.login_analysis {
+        match muninn::login::analyze_logins(&engine) {
+            Ok(analysis) => {
+                let output = muninn::login::render_login_analysis(&analysis);
+                if !cli.quiet {
+                    print!("{}", output);
+                }
+                save_report(login_path, "Login Analysis", &output, &analysis)?;
+                if !cli.quiet {
+                    println!("  {} Login analysis → {:?}", "✓".green(), login_path);
+                }
+            }
+            Err(e) => {
+                if !cli.quiet {
+                    eprintln!("  {} Login analysis failed: {}", "✗".red(), e);
+                }
+            }
+        }
+    }
+
+    // Executive Summary (uses detection results + scores)
+    if let Some(ref summary_path) = cli.summary {
+        let det_inputs: Vec<muninn::summary::DetectionInput> = results
+            .iter()
+            .map(|d| muninn::summary::DetectionInput {
+                title: d.title.clone(),
+                level: d.level.clone(),
+                description: d.description.clone(),
+                tags: d.tags.clone(),
+                count: d.result.count,
+                confidence: d.confidence.clone(),
+            })
+            .collect();
+        let score_data: Vec<_> = results
+            .iter()
+            .map(|d| (d.title.clone(), d.level.clone(), d.result.rows.clone()))
+            .collect();
+        let scores = muninn::scoring::compute_scores(&score_data);
+        let summary = muninn::summary::generate_summary(&det_inputs, &scores, total_events);
+        let output = muninn::summary::render_summary(&summary);
+        if !cli.quiet {
+            print!("{}", output);
+        }
+        save_report(summary_path, "Executive Summary", &output, &summary)?;
+        if !cli.quiet {
+            println!("  {} Summary → {:?}", "✓".green(), summary_path);
+        }
+    }
+
+    // IOC Extraction (streaming — already collected during file processing)
     if let Some(ref ioc_path) = cli.ioc_extract {
-        let iocs = muninn::ioc::extract_iocs(&engine)?;
+        let iocs = if let Some(collector) = merged_ioc_collector {
+            collector.finalize()
+        } else {
+            // Fallback: extract from unified engine if streaming didn't run
+            muninn::ioc::extract_iocs(&engine)?
+        };
         let output = muninn::ioc::render_iocs(&iocs);
         if !cli.quiet {
             print!("{}", output);
@@ -1939,7 +2159,8 @@ fn main() -> Result<()> {
             }
         }
 
-        save_report(ioc_path, "IOC Extraction", &output, &iocs)?;
+        let file_output = muninn::ioc::render_iocs_full(&iocs);
+        save_report(ioc_path, "IOC Extraction", &file_output, &iocs)?;
         if !cli.quiet {
             println!("  {} IOCs → {:?}", "✓".green(), ioc_path);
         }
@@ -2032,6 +2253,7 @@ fn main() -> Result<()> {
                     }
                     det
                 }).collect::<Vec<_>>(),
+                "source_files": &source_files,
                 "errors": parse_errors,
             });
 

@@ -1,6 +1,5 @@
 /target
 *.db
-*.evtx
 
 # Build artifacts
 *.so
@@ -27,3 +26,13 @@ detected_events.json
 
 # Rulesets (generated)
 rulesets/
+
+# Muninn output artifacts
+muninn_report_*.json
+muninn_iocs_*.txt
+muninn_logins_*.txt
+muninn_summary_*.txt
+muninn_scores_*.txt
+muninn_anomalies_*.txt
+muninn_correlate_*.txt
+muninn_export_*.*

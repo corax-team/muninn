@@ -8,6 +8,18 @@ use crate::model::Event;
 
 const TABLE: &str = "events";
 
+/// Reject field/index names that contain SQL-injection characters.
+fn validate_identifier(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | '#' | ' '))
+    {
+        anyhow::bail!("Invalid identifier: {:?}", name);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     pub rows: Vec<HashMap<String, String>>,
@@ -150,8 +162,9 @@ impl SearchEngine {
                 .iter()
                 .map(|col| -> &dyn rusqlite::types::ToSql { ev.fields.get(col).unwrap_or(&empty) })
                 .collect();
-            if stmt.execute(params.as_slice()).is_ok() {
-                loaded += 1;
+            match stmt.execute(params.as_slice()) {
+                Ok(_) => loaded += 1,
+                Err(e) => log::debug!("Failed to insert event: {}", e),
             }
         }
 
@@ -214,6 +227,7 @@ impl SearchEngine {
     }
 
     pub fn search_field(&self, field: &str, pattern: &str) -> Result<SearchResult> {
+        validate_identifier(field)?;
         let sql = format!(
             "SELECT * FROM \"{}\" WHERE \"{}\" LIKE ? ESCAPE '\\'",
             TABLE, field
@@ -337,6 +351,7 @@ impl SearchEngine {
     }
 
     pub fn distinct_values(&self, field: &str) -> Result<Vec<String>> {
+        validate_identifier(field)?;
         let sql = format!(
             "SELECT DISTINCT \"{}\" FROM \"{}\" WHERE \"{}\" IS NOT NULL AND \"{}\" != '' ORDER BY \"{}\"",
             field, TABLE, field, field, field
@@ -385,13 +400,6 @@ impl SearchEngine {
             conditions.join(" OR ")
         );
         let deleted = self.conn.execute(&sql, [])?;
-        self.conn.execute(
-            &format!(
-                "DELETE FROM \"{}\" WHERE \"{}\" IS NULL OR \"{}\" = ''",
-                TABLE, time_field, time_field
-            ),
-            [],
-        )?;
         Ok(deleted)
     }
 
@@ -425,6 +433,7 @@ impl SearchEngine {
     }
 
     pub fn create_index_on(&self, field: &str) -> Result<()> {
+        validate_identifier(field)?;
         let sql = format!(
             "CREATE INDEX IF NOT EXISTS \"idx_custom_{}\" ON \"{}\" (\"{}\")",
             field, TABLE, field
@@ -434,6 +443,7 @@ impl SearchEngine {
     }
 
     pub fn drop_index(&self, index_name: &str) -> Result<()> {
+        validate_identifier(index_name)?;
         let sql = format!("DROP INDEX IF EXISTS \"{}\"", index_name);
         self.conn.execute(&sql, [])?;
         Ok(())
