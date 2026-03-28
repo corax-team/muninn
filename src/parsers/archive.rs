@@ -1,6 +1,6 @@
 //! Archive extraction support for compressed log files.
 //!
-//! Supports `.zip`, `.gz`, `.bz2`, `.tar.gz`, and `.tgz` formats.
+//! Supports `.zip`, `.gz`, `.bz2`, `.tar.gz`, `.tgz`, `.rar`, and `.7z` formats.
 //! Gated behind the `archive` feature flag.
 
 use std::fs::File;
@@ -28,7 +28,7 @@ pub fn is_archive(path: &Path) -> bool {
             .unwrap_or("")
             .to_lowercase()
             .as_str(),
-        "zip" | "gz" | "bz2"
+        "zip" | "gz" | "bz2" | "rar" | "7z"
     )
 }
 
@@ -38,6 +38,13 @@ pub fn is_archive(path: &Path) -> bool {
 /// The caller must keep the returned `TempDir` alive for as long as the
 /// extracted files are needed; dropping it removes the directory.
 pub fn extract_to_temp(path: &Path) -> Result<(tempfile::TempDir, Vec<PathBuf>)> {
+    extract_to_temp_with_password(path, None)
+}
+
+pub fn extract_to_temp_with_password(
+    path: &Path,
+    password: Option<&str>,
+) -> Result<(tempfile::TempDir, Vec<PathBuf>)> {
     let tmp = tempfile::tempdir().context("failed to create temp directory")?;
     let name = path
         .file_name()
@@ -55,9 +62,11 @@ pub fn extract_to_temp(path: &Path) -> Result<(tempfile::TempDir, Vec<PathBuf>)>
             .to_lowercase()
             .as_str()
         {
-            "zip" => extract_zip(path, tmp.path())?,
+            "zip" => extract_zip(path, tmp.path(), password)?,
             "gz" => extract_single_gz(path, tmp.path())?,
             "bz2" => extract_single_bz2(path, tmp.path())?,
+            "rar" => extract_rar(path, tmp.path(), password)?,
+            "7z" => extract_7z(path, tmp.path(), password)?,
             other => bail!("unsupported archive extension: {}", other),
         }
     };
@@ -80,7 +89,7 @@ pub fn decompress_gz(path: &Path) -> Result<Vec<u8>> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn extract_zip(path: &Path, dest: &Path) -> Result<Vec<PathBuf>> {
+fn extract_zip(path: &Path, dest: &Path, password: Option<&str>) -> Result<Vec<PathBuf>> {
     let file = File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)
         .with_context(|| format!("failed to read zip archive {}", path.display()))?;
@@ -88,7 +97,13 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<Vec<PathBuf>> {
     let mut extracted = Vec::new();
 
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
+        let mut entry = if let Some(pw) = password {
+            archive
+                .by_index_decrypt(i, pw.as_bytes())
+                .map_err(|e| anyhow::anyhow!("zip decrypt error: {}", e))?
+        } else {
+            archive.by_index(i)?
+        };
         let entry_path = match entry.enclosed_name() {
             Some(p) => p.to_owned(),
             None => continue, // skip entries with unsafe paths
@@ -176,6 +191,120 @@ fn extract_single_bz2(path: &Path, dest: &Path) -> Result<Vec<PathBuf>> {
     Ok(vec![out_path])
 }
 
+fn extract_rar(path: &Path, dest: &Path, password: Option<&str>) -> Result<Vec<PathBuf>> {
+    let path_str = path.to_string_lossy();
+    let mut archive = if let Some(pw) = password {
+        unrar::Archive::with_password(&*path_str, pw.as_bytes())
+            .open_for_processing()
+            .map_err(|e| anyhow::anyhow!("failed to open RAR archive {}: {}", path.display(), e))?
+    } else {
+        unrar::Archive::new(&*path_str)
+            .open_for_processing()
+            .map_err(|e| anyhow::anyhow!("failed to open RAR archive {}: {}", path.display(), e))?
+    };
+
+    let mut extracted = Vec::new();
+
+    let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+
+    while let Some(header) = archive
+        .read_header()
+        .map_err(|e| anyhow::anyhow!("failed to read RAR header: {}", e))?
+    {
+        let (entry_path, is_file, is_dir) = {
+            let entry = header.entry();
+            (
+                entry.filename.clone(),
+                entry.is_file(),
+                entry.is_directory(),
+            )
+        };
+
+        let out_path = dest.join(&entry_path);
+
+        // Path traversal protection
+        if !out_path.starts_with(dest) {
+            log::warn!("Skipping path-traversal entry in RAR: {:?}", entry_path);
+            archive = header
+                .skip()
+                .map_err(|e| anyhow::anyhow!("failed to skip RAR entry: {}", e))?;
+            continue;
+        }
+
+        if is_file {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            archive = header.extract_to(&out_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to extract RAR entry {}: {}",
+                    entry_path.display(),
+                    e
+                )
+            })?;
+            // Verify the extracted file is within dest (post-extraction check)
+            if let Ok(canon) = out_path.canonicalize() {
+                if !canon.starts_with(&canonical_dest) {
+                    log::warn!(
+                        "Removing path-traversal file extracted from RAR: {:?}",
+                        entry_path
+                    );
+                    let _ = std::fs::remove_file(&canon);
+                    continue;
+                }
+            }
+            extracted.push(out_path);
+        } else {
+            if is_dir {
+                std::fs::create_dir_all(&out_path)?;
+            }
+            archive = header
+                .skip()
+                .map_err(|e| anyhow::anyhow!("failed to skip RAR entry: {}", e))?;
+        }
+    }
+
+    Ok(extracted)
+}
+
+fn extract_7z(path: &Path, dest: &Path, password: Option<&str>) -> Result<Vec<PathBuf>> {
+    if let Some(pw) = password {
+        sevenz_rust::decompress_file_with_password(path, dest, pw.into())
+            .with_context(|| format!("failed to decompress 7z archive {}", path.display()))?;
+    } else {
+        sevenz_rust::decompress_file(path, dest)
+            .with_context(|| format!("failed to decompress 7z archive {}", path.display()))?;
+    }
+
+    // Walk the output directory to collect extracted file paths,
+    // with path traversal protection
+    let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.to_path_buf());
+    let mut extracted = Vec::new();
+
+    for entry in walkdir::WalkDir::new(dest)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let entry_path = entry.path();
+        if entry_path.is_file() {
+            let canon = entry_path
+                .canonicalize()
+                .unwrap_or_else(|_| entry_path.to_path_buf());
+            if canon.starts_with(&canonical_dest) {
+                extracted.push(entry_path.to_path_buf());
+            } else {
+                log::warn!(
+                    "Skipping path-traversal file in 7z extraction: {:?}",
+                    entry_path
+                );
+                let _ = std::fs::remove_file(&canon);
+            }
+        }
+    }
+
+    Ok(extracted)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -218,10 +347,22 @@ mod tests {
     }
 
     #[test]
+    fn test_is_archive_rar() {
+        assert!(is_archive(Path::new("logs.rar")));
+    }
+
+    #[test]
+    fn test_is_archive_7z() {
+        assert!(is_archive(Path::new("logs.7z")));
+    }
+
+    #[test]
     fn test_is_archive_case_insensitive() {
         assert!(is_archive(Path::new("LOGS.ZIP")));
         assert!(is_archive(Path::new("data.GZ")));
         assert!(is_archive(Path::new("archive.TAR.GZ")));
+        assert!(is_archive(Path::new("LOGS.RAR")));
+        assert!(is_archive(Path::new("ARCHIVE.7Z")));
     }
 
     #[test]

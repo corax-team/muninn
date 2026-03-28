@@ -26,5 +26,8 @@ pub mod download;
 #[cfg(feature = "tui")]
 pub mod tui;
 
+#[cfg(feature = "ioc-enrich")]
+pub mod opentip;
+
 #[cfg(feature = "live")]
 pub mod live;

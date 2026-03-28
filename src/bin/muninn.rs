@@ -46,6 +46,7 @@ struct Config {
     avoid: Option<String>,
     output: Option<PathBuf>,
     dbfile: Option<PathBuf>,
+    load_db: Option<PathBuf>,
     distinct: Option<String>,
     rulefilter: Option<Vec<String>>,
     profile_rules: Option<bool>,
@@ -70,8 +71,8 @@ struct Config {
     about = "Muninn — memory of Corax. Universal log parser, SIGMA detection engine, and search tool. 15+ formats, one binary, zero dependencies."
 )]
 struct Cli {
-    #[arg(short = 'e', long = "events")]
-    events: PathBuf,
+    #[arg(short = 'e', long = "events", required_unless_present = "load_db")]
+    events: Option<PathBuf>,
 
     #[arg(short = 'r', long = "rules")]
     rules: Option<PathBuf>,
@@ -96,6 +97,13 @@ struct Cli {
 
     #[arg(long = "dbfile", default_missing_value = "auto", num_args = 0..=1)]
     dbfile: Option<PathBuf>,
+
+    #[arg(
+        long = "load-db",
+        help = "Load previously saved SQLite database (skip parsing)",
+        conflicts_with = "events"
+    )]
+    load_db: Option<PathBuf>,
 
     #[arg(short = 's', long = "select")]
     select: Option<String>,
@@ -211,6 +219,29 @@ struct Cli {
     )]
     opentip_key: Option<String>,
 
+    #[cfg(feature = "ioc-enrich")]
+    #[arg(
+        long = "opentip-check",
+        help = "Check extracted IOCs against Kaspersky OpenTIP (provide API key)"
+    )]
+    opentip_check: Option<String>,
+
+    #[cfg(feature = "ioc-enrich")]
+    #[arg(
+        long = "opentip-max",
+        help = "Max IOCs to check via OpenTIP (default: all, daily quota: 2000)",
+        default_value = "2000"
+    )]
+    opentip_max: usize,
+
+    #[cfg(feature = "ioc-enrich")]
+    #[arg(
+        long = "opentip-types",
+        help = "IOC types to check: hash,ip,domain,url (comma-separated, default: all)",
+        default_value = "all"
+    )]
+    opentip_types: String,
+
     #[arg(long = "threat-score", help = "Compute per-host/user threat scores and save to file", default_missing_value = "auto", num_args = 0..=1)]
     threat_score: Option<PathBuf>,
 
@@ -255,6 +286,12 @@ struct Cli {
         help = "Watch directory for changes and detect in real-time"
     )]
     live: bool,
+
+    #[arg(
+        long = "archive-password",
+        help = "Password for encrypted archives (zip, rar, 7z)"
+    )]
+    archive_password: Option<String>,
 
     // --- Performance controls ---
     #[arg(long = "max-events", help = "Maximum events to load (memory control)")]
@@ -422,6 +459,9 @@ fn main() -> Result<()> {
         }
         if cli.dbfile.is_none() {
             cli.dbfile = cfg.dbfile;
+        }
+        if cli.load_db.is_none() {
+            cli.load_db = cfg.load_db;
         }
         if cli.distinct.is_none() {
             cli.distinct = cfg.distinct;
@@ -625,166 +665,7 @@ fn main() -> Result<()> {
         println!();
     }
 
-    let mut files = parsers::discover_files(
-        &cli.events,
-        cli.select.as_deref(),
-        cli.avoid.as_deref(),
-        true,
-    )?;
-
-    // Extract archives and discover log files inside them
-    #[cfg(feature = "archive")]
-    let _archive_temps: Vec<tempfile::TempDir> = {
-        let mut temps = Vec::new();
-        let mut extra_files = Vec::new();
-        let archive_paths: Vec<_> = files
-            .iter()
-            .filter(|f| parsers::archive::is_archive(f))
-            .cloned()
-            .collect();
-        for archive_path in &archive_paths {
-            match parsers::archive::extract_to_temp(archive_path) {
-                Ok((tmp_dir, extracted)) => {
-                    log::info!(
-                        "Extracted {} files from {:?}",
-                        extracted.len(),
-                        archive_path
-                    );
-                    extra_files.extend(extracted);
-                    temps.push(tmp_dir);
-                }
-                Err(e) => {
-                    log::warn!("Failed to extract archive {:?}: {}", archive_path, e);
-                }
-            }
-        }
-        // Remove archive files from the file list and add extracted files
-        files.retain(|f| !parsers::archive::is_archive(f));
-        files.extend(extra_files);
-        temps
-    };
-
-    // Sort files largest-first so big files start early and don't overlap at the end
-    files.sort_by(|a, b| {
-        let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
-        let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
-        sb.cmp(&sa)
-    });
-
-    if files.is_empty() {
-        if !cli.quiet {
-            println!("  {} No log files found in {:?}", "✗".red(), cli.events);
-        }
-        return Ok(());
-    }
-
-    // Evidence integrity: SHA-256 hash all source files
-    let source_files: Vec<SourceFile> = files
-        .iter()
-        .filter_map(|f| {
-            let size_bytes = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
-            match hash_file_sha256(f) {
-                Ok(sha256) => Some(SourceFile {
-                    path: f.to_string_lossy().to_string(),
-                    sha256,
-                    size_bytes,
-                }),
-                Err(e) => {
-                    log::warn!("Failed to hash {:?}: {}", f, e);
-                    None
-                }
-            }
-        })
-        .collect();
-    if !cli.quiet {
-        println!(
-            "  {} Evidence integrity: {} files hashed (SHA-256)",
-            "\u{2713}".green(),
-            source_files.len()
-        );
-    }
-
-    // Pre-compute file sizes for progress tracking
-    let file_sizes: Vec<u64> = files
-        .iter()
-        .map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0))
-        .collect();
-    let total_size_bytes: u64 = file_sizes.iter().sum();
-
-    let pb = if !cli.quiet {
-        let pb = ProgressBar::new(total_size_bytes);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(
-                    "  {spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) | {msg}",
-                )
-                .unwrap()
-                .progress_chars("█▉▊▋▌▍▎▏ "),
-        );
-        Some(pb)
-    } else {
-        None
-    };
-
-    // Build early event filter from rules (if available)
-    let event_filter = if let Some(ref rules_path) = cli.rules {
-        match sigma::load_rules(rules_path) {
-            Ok(rules) => {
-                let filter = muninn::EventFilter::from_rules(&rules);
-                if !filter.is_pass_all() && !cli.quiet {
-                    println!(
-                        "  {} Early filter active ({} field constraints)",
-                        "✓".green(),
-                        filter.field_count()
-                    );
-                }
-                Some(filter)
-            }
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
-
-    // Configure thread pool: default to half of available cores (min 1, max 4)
-    let workers = cli.workers.unwrap_or_else(|| {
-        let cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(2);
-        (cpus / 2).clamp(1, 4)
-    });
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(workers)
-        .build_global()
-        .ok();
-
-    let batch_size = cli.batch_size.unwrap_or(50_000);
-    let max_events = cli.max_events;
-
-    let mut engine = SearchEngine::new()?;
-    let mut total_events = 0usize;
-    let filtered_events = 0usize;
-    let mut format_stats: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    let mut parse_errors: Vec<String> = Vec::new();
-
-    // Determine if unified SQLite engine is needed (for search/SQL/anomaly features)
-    let needs_unified_engine = cli.keyword.is_some()
-        || cli.field_search.is_some()
-        || cli.sql.is_some()
-        || cli.sql_file.is_some()
-        || cli.regex_search.is_some()
-        || cli.distinct.is_some()
-        || cli.dbfile.is_some()
-        || cli.anomalies.is_some()
-        || !cli.add_index.is_empty()
-        || !cli.remove_index.is_empty()
-        || cli.keepflat.is_some()
-        || cli.after.is_some()
-        || cli.before.is_some()
-        || cli.login_analysis.is_some();
-
-    // Pre-compile SIGMA rules if provided (needed before streaming)
+    // Pre-compile SIGMA rules if provided (needed before streaming and load-db)
     let compiled_rules: Option<Vec<(muninn::sigma::Rule, String)>> =
         if let Some(ref rules_path) = cli.rules {
             let mut rules = sigma::load_rules(rules_path)
@@ -845,149 +726,450 @@ fn main() -> Result<()> {
             None
         };
 
-    // Streaming pipeline: parse + SIGMA + stats per file, free memory after each
-    let do_transforms = cli.transforms;
-    let do_hashes = cli.hashes;
-    let do_stats = cli.stats;
-    let do_ioc_extract = cli.ioc_extract.is_some();
-    let ioc_max = cli.ioc_max;
+    let mut total_events = 0usize;
+    let filtered_events = 0usize;
+    let mut format_stats: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut parse_errors: Vec<String> = Vec::new();
+    let mut merged_ioc_collector: Option<muninn::ioc::IocCollector> = None;
+    let field_counts: std::sync::Mutex<HashMap<String, usize>> =
+        std::sync::Mutex::new(HashMap::new());
 
-    use rayon::prelude::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    // Branch: load from saved database or parse from files
+    let (engine, mut results, files, source_files, workers) = if let Some(ref db_path) = cli.load_db
+    {
+        // --load-db: skip all parsing, load pre-saved SQLite database
+        if !cli.quiet {
+            println!("  {} Loading database from {:?}...", "▶".cyan(), db_path);
+        }
+        let eng = muninn::search::SearchEngine::from_file(db_path)
+            .context(format!("Failed to load database from {:?}", db_path))?;
+        total_events = eng.event_count();
+        if !cli.quiet {
+            println!(
+                "  {} Loaded {} events from {:?}",
+                "✓".green(),
+                eng.event_count(),
+                db_path
+            );
+        }
 
-    let field_counts: Mutex<HashMap<String, usize>> = Mutex::new(HashMap::new());
-    let atomic_total_events = AtomicUsize::new(0);
-    let sigma_limit = cli.limit;
-    let pb_ref = &pb;
-    let file_sizes_ref = &file_sizes;
-
-    // Per-file results: (file_path, event_count, format, detections, parse_error, ioc_collector)
-    type FileResult = (
-        PathBuf,
-        usize,
-        Option<String>,
-        Vec<Detection>,
-        Option<String>,
-        Option<muninn::ioc::IocCollector>,
-    );
-
-    let file_results: Vec<FileResult> = files
-        .par_iter()
-        .enumerate()
-        .map(|(file_idx, file)| {
-            let fname = file
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let file_size = file_sizes_ref[file_idx];
-
-            if let Some(ref bar) = pb_ref {
-                bar.set_message(fname.clone());
+        // Run SIGMA rules against the loaded engine
+        let mut db_results: Vec<Detection> = Vec::new();
+        if let Some(ref compiled) = compiled_rules {
+            let sigma_limit = cli.limit;
+            let sigma_pb = if !cli.quiet {
+                let pb = ProgressBar::new(compiled.len() as u64);
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(
+                            "  \u{1f50d} SIGMA rules [{bar:40.cyan/blue}] {pos}/{len} | {msg}",
+                        )
+                        .unwrap()
+                        .progress_chars("\u{2588}\u{2591} "),
+                );
+                Some(pb)
+            } else {
+                None
+            };
+            for (rule, sql) in compiled {
+                if let Some(ref pb) = sigma_pb {
+                    let title: String = rule.title.chars().take(40).collect();
+                    pb.set_message(title);
+                    pb.inc(1);
+                }
+                let effective_limit = sigma_limit.unwrap_or(200);
+                let query_result = eng.query_sql_with_limit(sql, effective_limit);
+                if let Ok(r) = query_result {
+                    if r.count > 0 {
+                        let confidence = compute_confidence(rule, &r.rows);
+                        db_results.push(Detection {
+                            title: rule.title.clone(),
+                            level: rule.level.clone(),
+                            description: rule.description.clone(),
+                            id: rule.id.clone(),
+                            author: rule.author.clone(),
+                            tags: rule.tags.clone(),
+                            result: r,
+                            confidence,
+                        });
+                    }
+                }
             }
+            if let Some(pb) = sigma_pb {
+                pb.finish_and_clear();
+            }
+            if !cli.quiet {
+                println!(
+                    "  {} Executing ruleset: {} rules matched\n",
+                    "[+]".green().bold(),
+                    db_results.len().to_string().bold(),
+                );
+            }
+        }
 
-            // Detect format to decide streaming vs batch
-            let format = parsers::detect_format(file).ok();
-            let is_evtx = matches!(format, Some(muninn::model::SourceFormat::Evtx));
-            let format_name = format
-                .as_ref()
-                .map(|f| f.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
+        let workers = cli.workers.unwrap_or(1);
+        let files: Vec<PathBuf> = Vec::new();
+        let source_files: Vec<SourceFile> = Vec::new();
+        (eng, db_results, files, source_files, workers)
+    } else {
+        // Normal flow: parse events from files
+        let events_path = cli
+            .events
+            .as_ref()
+            .expect("events required when --load-db not set");
 
-            // Helper: process a batch of events (transforms, hashes, filter, stats)
-            let process_batch = |batch: &mut Vec<muninn::model::Event>| {
-                if let Some(ref fmap) = field_map {
-                    for ev in batch.iter_mut() {
-                        ev.apply_field_map(fmap);
+        let mut files = parsers::discover_files(
+            events_path,
+            cli.select.as_deref(),
+            cli.avoid.as_deref(),
+            true,
+        )?;
+
+        // Extract archives and discover log files inside them
+        #[cfg(feature = "archive")]
+        let _archive_temps: Vec<tempfile::TempDir> = {
+            let mut temps = Vec::new();
+            let mut extra_files = Vec::new();
+            let archive_paths: Vec<_> = files
+                .iter()
+                .filter(|f| parsers::archive::is_archive(f))
+                .cloned()
+                .collect();
+            for archive_path in &archive_paths {
+                match parsers::archive::extract_to_temp_with_password(
+                    archive_path,
+                    cli.archive_password.as_deref(),
+                ) {
+                    Ok((tmp_dir, extracted)) => {
+                        log::info!(
+                            "Extracted {} files from {:?}",
+                            extracted.len(),
+                            archive_path
+                        );
+                        extra_files.extend(extracted);
+                        temps.push(tmp_dir);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to extract archive {:?}: {}", archive_path, e);
                     }
                 }
-                if do_transforms {
-                    muninn::transforms::apply_transforms(
-                        batch,
-                        &muninn::transforms::default_transforms(),
-                    );
-                }
-                if do_hashes {
-                    for ev in batch.iter_mut() {
-                        ev.compute_hash();
+            }
+            // Remove archive files from the file list and add extracted files
+            files.retain(|f| !parsers::archive::is_archive(f));
+            files.extend(extra_files);
+            temps
+        };
+
+        // Sort files largest-first so big files start early and don't overlap at the end
+        files.sort_by(|a, b| {
+            let sa = std::fs::metadata(a).map(|m| m.len()).unwrap_or(0);
+            let sb = std::fs::metadata(b).map(|m| m.len()).unwrap_or(0);
+            sb.cmp(&sa)
+        });
+
+        if files.is_empty() {
+            if !cli.quiet {
+                println!("  {} No log files found in {:?}", "✗".red(), events_path);
+            }
+            return Ok(());
+        }
+
+        // Evidence integrity: SHA-256 hash all source files
+        let hash_pb = if !cli.quiet && files.len() > 10 {
+            let pb = ProgressBar::new(files.len() as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("  \u{1f512} Hashing [{bar:40.cyan/blue}] {pos}/{len} files")
+                    .unwrap()
+                    .progress_chars("\u{2588}\u{2591} "),
+            );
+            Some(pb)
+        } else {
+            None
+        };
+        let source_files: Vec<SourceFile> = files
+            .iter()
+            .filter_map(|f| {
+                let size_bytes = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+                let result = match hash_file_sha256(f) {
+                    Ok(sha256) => Some(SourceFile {
+                        path: f.to_string_lossy().to_string(),
+                        sha256,
+                        size_bytes,
+                    }),
+                    Err(e) => {
+                        log::warn!("Failed to hash {:?}: {}", f, e);
+                        None
                     }
+                };
+                if let Some(ref pb) = hash_pb {
+                    pb.inc(1);
                 }
-                if let Some(ref filter) = event_filter {
-                    batch.retain(|ev| filter.matches(ev));
+                result
+            })
+            .collect();
+        if let Some(pb) = hash_pb {
+            pb.finish_and_clear();
+        }
+        if !cli.quiet {
+            println!(
+                "  {} Evidence integrity: {} files hashed (SHA-256)",
+                "\u{2713}".green(),
+                source_files.len()
+            );
+        }
+
+        // Pre-compute file sizes for progress tracking
+        let file_sizes: Vec<u64> = files
+            .iter()
+            .map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0))
+            .collect();
+        let total_size_bytes: u64 = file_sizes.iter().sum();
+
+        let pb = if !cli.quiet {
+            let pb = ProgressBar::new(total_size_bytes);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "  {spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}) | {msg}",
+                    )
+                    .unwrap()
+                    .progress_chars("█▉▊▋▌▍▎▏ "),
+            );
+            Some(pb)
+        } else {
+            None
+        };
+
+        // Build early event filter from rules (if available)
+        let event_filter = if let Some(ref rules_path) = cli.rules {
+            match sigma::load_rules(rules_path) {
+                Ok(rules) => {
+                    let filter = muninn::EventFilter::from_rules(&rules);
+                    if !filter.is_pass_all() && !cli.quiet {
+                        println!(
+                            "  {} Early filter active ({} field constraints)",
+                            "✓".green(),
+                            filter.field_count()
+                        );
+                    }
+                    Some(filter)
                 }
-                if do_stats {
-                    let mut local_counts: HashMap<String, usize> = HashMap::new();
-                    for ev in batch.iter() {
-                        for (k, v) in &ev.fields {
-                            if !v.is_empty() {
-                                *local_counts.entry(k.clone()).or_default() += 1;
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        // Configure thread pool: default to half of available cores (min 1, max 4)
+        let workers = cli.workers.unwrap_or_else(|| {
+            let cpus = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(2);
+            (cpus / 2).clamp(1, 4)
+        });
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build_global()
+            .ok();
+
+        let batch_size = cli.batch_size.unwrap_or(50_000);
+        let max_events = cli.max_events;
+
+        // Use on-disk SQLite when --dbfile is specified (no RAM limit)
+        let mut engine = if let Some(ref dbpath) = cli.dbfile {
+            if !cli.quiet {
+                println!(
+                    "  {} Writing directly to {:?} (disk-backed, no RAM limit)",
+                    "\u{25b6}".cyan(),
+                    dbpath
+                );
+            }
+            SearchEngine::new_on_disk(dbpath)?
+        } else {
+            SearchEngine::new()?
+        };
+
+        // Determine if unified SQLite engine is needed (for search/SQL/anomaly features)
+        let needs_unified_engine = cli.keyword.is_some()
+            || cli.field_search.is_some()
+            || cli.sql.is_some()
+            || cli.sql_file.is_some()
+            || cli.regex_search.is_some()
+            || cli.distinct.is_some()
+            || cli.dbfile.is_some()
+            || cli.anomalies.is_some()
+            || !cli.add_index.is_empty()
+            || !cli.remove_index.is_empty()
+            || cli.keepflat.is_some()
+            || cli.after.is_some()
+            || cli.before.is_some()
+            || cli.login_analysis.is_some();
+
+        // Streaming pipeline: parse + SIGMA + stats per file, free memory after each
+        let do_transforms = cli.transforms;
+        let do_hashes = cli.hashes;
+        let do_stats = cli.stats;
+        let do_ioc_extract = cli.ioc_extract.is_some();
+        let ioc_max = cli.ioc_max;
+
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let atomic_total_events = AtomicUsize::new(0);
+        let sigma_limit = cli.limit;
+        let pb_ref = &pb;
+        let file_sizes_ref = &file_sizes;
+
+        // Per-file results: (file_path, event_count, format, detections, parse_error, ioc_collector)
+        type FileResult = (
+            PathBuf,
+            usize,
+            Option<String>,
+            Vec<Detection>,
+            Option<String>,
+            Option<muninn::ioc::IocCollector>,
+        );
+
+        let file_results: Vec<FileResult> = files
+            .par_iter()
+            .enumerate()
+            .map(|(file_idx, file)| {
+                let fname = file
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let file_size = file_sizes_ref[file_idx];
+
+                if let Some(ref bar) = pb_ref {
+                    bar.set_message(fname.clone());
+                }
+
+                // Detect format to decide streaming vs batch
+                let format = parsers::detect_format(file).ok();
+                let is_evtx = matches!(format, Some(muninn::model::SourceFormat::Evtx));
+                let format_name = format
+                    .as_ref()
+                    .map(|f| f.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                // Helper: process a batch of events (transforms, hashes, filter, stats)
+                let process_batch = |batch: &mut Vec<muninn::model::Event>| {
+                    if let Some(ref fmap) = field_map {
+                        for ev in batch.iter_mut() {
+                            ev.apply_field_map(fmap);
+                        }
+                    }
+                    if do_transforms {
+                        muninn::transforms::apply_transforms(
+                            batch,
+                            &muninn::transforms::default_transforms(),
+                        );
+                    }
+                    if do_hashes {
+                        for ev in batch.iter_mut() {
+                            ev.compute_hash();
+                        }
+                    }
+                    if let Some(ref filter) = event_filter {
+                        batch.retain(|ev| filter.matches(ev));
+                    }
+                    if do_stats {
+                        let mut local_counts: HashMap<String, usize> = HashMap::new();
+                        for ev in batch.iter() {
+                            for (k, v) in &ev.fields {
+                                if !v.is_empty() {
+                                    *local_counts.entry(k.clone()).or_default() += 1;
+                                }
+                            }
+                        }
+                        if let Ok(mut global) = field_counts.lock() {
+                            for (k, c) in local_counts {
+                                *global.entry(k).or_default() += c;
                             }
                         }
                     }
-                    if let Ok(mut global) = field_counts.lock() {
-                        for (k, c) in local_counts {
-                            *global.entry(k).or_default() += c;
-                        }
-                    }
-                }
-            };
-
-            // Create per-file SIGMA engine if rules are provided
-            let mut file_engine = if compiled_rules.is_some() {
-                match SearchEngine::new() {
-                    Ok(e) => Some(e),
-                    Err(_) => {
-                        if let Some(ref bar) = pb_ref {
-                            bar.inc(file_size);
-                        }
-                        return (file.clone(), 0, Some(format_name), Vec::new(), None, None);
-                    }
-                }
-            } else {
-                None
-            };
-
-            let mut event_count = 0usize;
-            let mut ioc_collector = if do_ioc_extract {
-                Some(muninn::ioc::IocCollector::with_max_entries(ioc_max))
-            } else {
-                None
-            };
-
-            if is_evtx {
-                // STREAMING path for EVTX: never hold all events in RAM
-                let rx = match muninn::parsers::evtx::parse_streaming(file) {
-                    Ok(rx) => rx,
-                    Err(e) => {
-                        let msg = format!("{}: {}", fname, e);
-                        if let Some(ref bar) = pb_ref {
-                            bar.inc(file_size);
-                        }
-                        return (
-                            file.clone(),
-                            0,
-                            Some(format_name),
-                            Vec::new(),
-                            Some(msg),
-                            None,
-                        );
-                    }
                 };
 
-                // Track progress within file: estimate bytes from event count
-                let mut reported_bytes: u64 = 0;
-
-                let mut batch: Vec<muninn::model::Event> = Vec::with_capacity(batch_size);
-                for ev in rx {
-                    // Check max_events
-                    if let Some(max) = max_events {
-                        if atomic_total_events.load(Ordering::Relaxed) >= max {
-                            break;
+                // Create per-file SIGMA engine if rules are provided
+                let mut file_engine = if compiled_rules.is_some() {
+                    match SearchEngine::new() {
+                        Ok(e) => Some(e),
+                        Err(_) => {
+                            if let Some(ref bar) = pb_ref {
+                                bar.inc(file_size);
+                            }
+                            return (file.clone(), 0, Some(format_name), Vec::new(), None, None);
                         }
                     }
-                    batch.push(ev);
-                    if batch.len() >= batch_size {
+                } else {
+                    None
+                };
+
+                let mut event_count = 0usize;
+                let mut ioc_collector = if do_ioc_extract {
+                    Some(muninn::ioc::IocCollector::with_max_entries(ioc_max))
+                } else {
+                    None
+                };
+
+                if is_evtx {
+                    // STREAMING path for EVTX: never hold all events in RAM
+                    let rx = match muninn::parsers::evtx::parse_streaming(file) {
+                        Ok(rx) => rx,
+                        Err(e) => {
+                            let msg = format!("{}: {}", fname, e);
+                            if let Some(ref bar) = pb_ref {
+                                bar.inc(file_size);
+                            }
+                            return (
+                                file.clone(),
+                                0,
+                                Some(format_name),
+                                Vec::new(),
+                                Some(msg),
+                                None,
+                            );
+                        }
+                    };
+
+                    // Track progress within file: estimate bytes from event count
+                    let mut reported_bytes: u64 = 0;
+
+                    let mut batch: Vec<muninn::model::Event> = Vec::with_capacity(batch_size);
+                    for ev in rx {
+                        // Check max_events
+                        if let Some(max) = max_events {
+                            if atomic_total_events.load(Ordering::Relaxed) >= max {
+                                break;
+                            }
+                        }
+                        batch.push(ev);
+                        if batch.len() >= batch_size {
+                            process_batch(&mut batch);
+                            if let Some(ref mut col) = ioc_collector {
+                                col.process_events(&batch);
+                            }
+                            event_count += batch.len();
+                            atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
+                            if let Some(ref mut eng) = file_engine {
+                                let _ = eng.load_events(&batch);
+                            }
+                            // Incremental progress: estimate bytes from raw sizes
+                            if let Some(ref bar) = pb_ref {
+                                let batch_bytes: u64 =
+                                    batch.iter().map(|e| e.raw.len() as u64 + 200).sum();
+                                let increment = batch_bytes.min(file_size - reported_bytes);
+                                bar.inc(increment);
+                                reported_bytes += increment;
+                            }
+                            batch.clear();
+                        }
+                    }
+                    // Flush remaining
+                    if !batch.is_empty() {
                         process_batch(&mut batch);
                         if let Some(ref mut col) = ioc_collector {
                             col.process_events(&batch);
@@ -997,236 +1179,251 @@ fn main() -> Result<()> {
                         if let Some(ref mut eng) = file_engine {
                             let _ = eng.load_events(&batch);
                         }
-                        // Incremental progress: estimate bytes from raw sizes
-                        if let Some(ref bar) = pb_ref {
-                            let batch_bytes: u64 =
-                                batch.iter().map(|e| e.raw.len() as u64 + 200).sum();
-                            let increment = batch_bytes.min(file_size - reported_bytes);
-                            bar.inc(increment);
-                            reported_bytes += increment;
-                        }
-                        batch.clear();
                     }
-                }
-                // Flush remaining
-                if !batch.is_empty() {
-                    process_batch(&mut batch);
+                    // Correct to exact file size
+                    if let Some(ref bar) = pb_ref {
+                        if reported_bytes < file_size {
+                            bar.inc(file_size - reported_bytes);
+                        }
+                    }
+                } else {
+                    // BATCH path for non-EVTX (typically small files)
+                    let mut pr = match parsers::parse_file(file) {
+                        Ok(pr) => pr,
+                        Err(e) => {
+                            let msg = format!("{}: {}", fname, e);
+                            if let Some(ref bar) = pb_ref {
+                                bar.inc(file_size);
+                            }
+                            return (file.clone(), 0, None, Vec::new(), Some(msg), None);
+                        }
+                    };
+
+                    // Apply max_events limit
+                    if let Some(max) = max_events {
+                        let current = atomic_total_events.load(Ordering::Relaxed);
+                        if current >= max {
+                            if let Some(ref bar) = pb_ref {
+                                bar.inc(file_size);
+                            }
+                            return (file.clone(), 0, Some(format_name), Vec::new(), None, None);
+                        }
+                        let remaining = max - current;
+                        if pr.events.len() > remaining {
+                            pr.events.truncate(remaining);
+                        }
+                    }
+
+                    process_batch(&mut pr.events);
                     if let Some(ref mut col) = ioc_collector {
-                        col.process_events(&batch);
+                        col.process_events(&pr.events);
                     }
-                    event_count += batch.len();
-                    atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
+                    event_count = pr.events.len();
+                    atomic_total_events.fetch_add(event_count, Ordering::Relaxed);
+
                     if let Some(ref mut eng) = file_engine {
-                        let _ = eng.load_events(&batch);
+                        let _ = eng.load_events(&pr.events);
                     }
-                }
-                // Correct to exact file size
-                if let Some(ref bar) = pb_ref {
-                    if reported_bytes < file_size {
-                        bar.inc(file_size - reported_bytes);
-                    }
-                }
-            } else {
-                // BATCH path for non-EVTX (typically small files)
-                let mut pr = match parsers::parse_file(file) {
-                    Ok(pr) => pr,
-                    Err(e) => {
-                        let msg = format!("{}: {}", fname, e);
-                        if let Some(ref bar) = pb_ref {
-                            bar.inc(file_size);
-                        }
-                        return (file.clone(), 0, None, Vec::new(), Some(msg), None);
-                    }
-                };
-
-                // Apply max_events limit
-                if let Some(max) = max_events {
-                    let current = atomic_total_events.load(Ordering::Relaxed);
-                    if current >= max {
-                        if let Some(ref bar) = pb_ref {
-                            bar.inc(file_size);
-                        }
-                        return (file.clone(), 0, Some(format_name), Vec::new(), None, None);
-                    }
-                    let remaining = max - current;
-                    if pr.events.len() > remaining {
-                        pr.events.truncate(remaining);
-                    }
+                    drop(pr);
                 }
 
-                process_batch(&mut pr.events);
-                if let Some(ref mut col) = ioc_collector {
-                    col.process_events(&pr.events);
-                }
-                event_count = pr.events.len();
-                atomic_total_events.fetch_add(event_count, Ordering::Relaxed);
-
-                if let Some(ref mut eng) = file_engine {
-                    let _ = eng.load_events(&pr.events);
-                }
-                drop(pr);
-            }
-
-            // Run SIGMA rules
-            let detections = if let Some(ref mut eng) = file_engine {
-                let _ = eng.create_indexes();
-                let mut file_detections = Vec::new();
-                if let Some(ref compiled) = compiled_rules {
-                    for (rule, sql) in compiled {
-                        let effective_limit = sigma_limit.unwrap_or(200);
-                        let query_result = eng.query_sql_with_limit(sql, effective_limit);
-                        if let Ok(r) = query_result {
-                            if r.count > 0 {
-                                let confidence = compute_confidence(rule, &r.rows);
-                                file_detections.push(Detection {
-                                    title: rule.title.clone(),
-                                    level: rule.level.clone(),
-                                    description: rule.description.clone(),
-                                    id: rule.id.clone(),
-                                    author: rule.author.clone(),
-                                    tags: rule.tags.clone(),
-                                    result: r,
-                                    confidence,
-                                });
+                // Run SIGMA rules
+                let detections = if let Some(ref mut eng) = file_engine {
+                    let _ = eng.create_indexes();
+                    let mut file_detections = Vec::new();
+                    if let Some(ref compiled) = compiled_rules {
+                        for (rule, sql) in compiled {
+                            let effective_limit = sigma_limit.unwrap_or(200);
+                            let query_result = eng.query_sql_with_limit(sql, effective_limit);
+                            if let Ok(r) = query_result {
+                                if r.count > 0 {
+                                    let confidence = compute_confidence(rule, &r.rows);
+                                    file_detections.push(Detection {
+                                        title: rule.title.clone(),
+                                        level: rule.level.clone(),
+                                        description: rule.description.clone(),
+                                        id: rule.id.clone(),
+                                        author: rule.author.clone(),
+                                        tags: rule.tags.clone(),
+                                        result: r,
+                                        confidence,
+                                    });
+                                }
                             }
                         }
                     }
+                    file_detections
+                } else {
+                    Vec::new()
+                };
+
+                // Non-EVTX: report full file size at once (EVTX already reported incrementally)
+                if !is_evtx {
+                    if let Some(ref bar) = pb_ref {
+                        bar.inc(file_size);
+                    }
                 }
-                file_detections
+
+                (
+                    file.clone(),
+                    event_count,
+                    Some(format_name),
+                    detections,
+                    None,
+                    ioc_collector,
+                )
+            })
+            .collect();
+
+        // Aggregate results from streaming pipeline
+        for (_file, count, fmt, _, err, _) in &file_results {
+            if let Some(ref msg) = err {
+                parse_errors.push(msg.clone());
+                if !cli.quiet {
+                    eprintln!("  {} {}", "✗".red(), msg);
+                }
+            }
+            if let Some(ref f) = fmt {
+                *format_stats.entry(f.clone()).or_default() += count;
+            }
+            total_events += count;
+        }
+
+        // Merge SIGMA detections and IOC collectors from per-file results
+        let results: Vec<Detection>;
+        {
+            let mut merged: HashMap<String, Detection> = HashMap::new();
+            for (_, _, _, detections, _, file_ioc) in file_results {
+                // Merge IOC collectors
+                if let Some(col) = file_ioc {
+                    match merged_ioc_collector {
+                        Some(ref mut m) => m.merge(col),
+                        None => merged_ioc_collector = Some(col),
+                    }
+                }
+                for det in detections {
+                    let entry = merged.entry(det.title.clone()).or_insert(Detection {
+                        title: det.title.clone(),
+                        level: det.level.clone(),
+                        description: det.description.clone(),
+                        id: det.id.clone(),
+                        author: det.author.clone(),
+                        tags: det.tags.clone(),
+                        result: muninn::SearchResult {
+                            rows: Vec::new(),
+                            count: 0,
+                            query: det.result.query.clone(),
+                            duration_ms: 0,
+                        },
+                        confidence: det.confidence.clone(),
+                    });
+                    // Any low-confidence file → merged detection is low
+                    if det.confidence == "low" {
+                        entry.confidence = "low".to_string();
+                    }
+                    entry.result.count += det.result.count;
+                    entry.result.duration_ms += det.result.duration_ms;
+                    if entry.result.rows.len() < 200 {
+                        let take = (200 - entry.result.rows.len()).min(det.result.rows.len());
+                        entry
+                            .result
+                            .rows
+                            .extend(det.result.rows.into_iter().take(take));
+                    }
+                }
+            }
+            results = merged.into_values().collect();
+
+            if compiled_rules.is_some() && !cli.quiet {
+                println!(
+                    "  {} Executing ruleset: {} rules matched across {} files\n",
+                    "[+]".green().bold(),
+                    results.len().to_string().bold(),
+                    files.len()
+                );
+            }
+        }
+
+        // Load unified engine only if features require it (sequential, after streaming)
+        // Skip if engine is already on-disk (--dbfile) — events were written during streaming
+        let skip_unified_load = cli.dbfile.is_some();
+        if needs_unified_engine && !skip_unified_load {
+            let load_pb = if !cli.quiet && total_size_bytes > 0 {
+                let pb = ProgressBar::new(total_size_bytes);
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template("  \u{25b6} Loading into DB [{bar:40.cyan/blue}] {bytes}/{total_bytes} | {msg}")
+                        .unwrap()
+                        .progress_chars("\u{2588}\u{2591} "),
+                );
+                Some(pb)
             } else {
-                Vec::new()
+                if !cli.quiet {
+                    println!(
+                        "  {} Loading events into search engine...",
+                        "\u{25b6}".cyan()
+                    );
+                }
+                None
             };
 
-            // Non-EVTX: report full file size at once (EVTX already reported incrementally)
-            if !is_evtx {
-                if let Some(ref bar) = pb_ref {
-                    bar.inc(file_size);
+            for file in &files {
+                let file_size = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                if let Some(ref pb) = load_pb {
+                    let fname = file
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    pb.set_message(fname);
                 }
-            }
 
-            (
-                file.clone(),
-                event_count,
-                Some(format_name),
-                detections,
-                None,
-                ioc_collector,
-            )
-        })
-        .collect();
-
-    // Aggregate results from streaming pipeline
-    let mut merged_ioc_collector: Option<muninn::ioc::IocCollector> = None;
-    for (_file, count, fmt, _, err, _) in &file_results {
-        if let Some(ref msg) = err {
-            parse_errors.push(msg.clone());
-            if !cli.quiet {
-                eprintln!("  {} {}", "✗".red(), msg);
-            }
-        }
-        if let Some(ref f) = fmt {
-            *format_stats.entry(f.clone()).or_default() += count;
-        }
-        total_events += count;
-    }
-
-    // Merge SIGMA detections and IOC collectors from per-file results
-    let mut results: Vec<Detection>;
-    {
-        let mut merged: HashMap<String, Detection> = HashMap::new();
-        for (_, _, _, detections, _, file_ioc) in file_results {
-            // Merge IOC collectors
-            if let Some(col) = file_ioc {
-                match merged_ioc_collector {
-                    Some(ref mut m) => m.merge(col),
-                    None => merged_ioc_collector = Some(col),
-                }
-            }
-            for det in detections {
-                let entry = merged.entry(det.title.clone()).or_insert(Detection {
-                    title: det.title.clone(),
-                    level: det.level.clone(),
-                    description: det.description.clone(),
-                    id: det.id.clone(),
-                    author: det.author.clone(),
-                    tags: det.tags.clone(),
-                    result: muninn::SearchResult {
-                        rows: Vec::new(),
-                        count: 0,
-                        query: det.result.query.clone(),
-                        duration_ms: 0,
-                    },
-                    confidence: det.confidence.clone(),
-                });
-                // Any low-confidence file → merged detection is low
-                if det.confidence == "low" {
-                    entry.confidence = "low".to_string();
-                }
-                entry.result.count += det.result.count;
-                entry.result.duration_ms += det.result.duration_ms;
-                if entry.result.rows.len() < 200 {
-                    let take = (200 - entry.result.rows.len()).min(det.result.rows.len());
-                    entry
-                        .result
-                        .rows
-                        .extend(det.result.rows.into_iter().take(take));
-                }
-            }
-        }
-        results = merged.into_values().collect();
-
-        if compiled_rules.is_some() && !cli.quiet {
-            println!(
-                "  {} Executing ruleset: {} rules matched across {} files\n",
-                "[+]".green().bold(),
-                results.len().to_string().bold(),
-                files.len()
-            );
-        }
-    }
-
-    // Load unified engine only if features require it (sequential, after streaming)
-    if needs_unified_engine {
-        if !cli.quiet {
-            println!("  {} Loading events into search engine...", "▶".cyan());
-        }
-        for file in &files {
-            let is_evtx = file
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("evtx"));
-            if is_evtx {
-                // Streaming for EVTX to avoid OOM
-                if let Ok(rx) = muninn::parsers::evtx::parse_streaming(file) {
-                    let mut batch = Vec::with_capacity(batch_size);
-                    for ev in rx {
-                        batch.push(ev);
-                        if batch.len() >= batch_size {
+                let is_evtx = file
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("evtx"));
+                if is_evtx {
+                    if let Ok(rx) = muninn::parsers::evtx::parse_streaming(file) {
+                        let mut batch = Vec::with_capacity(batch_size);
+                        for ev in rx {
+                            batch.push(ev);
+                            if batch.len() >= batch_size {
+                                engine.load_events(&batch)?;
+                                batch.clear();
+                            }
+                        }
+                        if !batch.is_empty() {
                             engine.load_events(&batch)?;
-                            batch.clear();
                         }
                     }
-                    if !batch.is_empty() {
-                        engine.load_events(&batch)?;
+                } else if let Ok(pr) = parsers::parse_file(file) {
+                    let n = pr.events.len();
+                    if n > batch_size {
+                        for chunk in pr.events.chunks(batch_size) {
+                            engine.load_events(chunk)?;
+                        }
+                    } else {
+                        engine.load_events(&pr.events)?;
                     }
                 }
-            } else if let Ok(pr) = parsers::parse_file(file) {
-                let n = pr.events.len();
-                if n > batch_size {
-                    for chunk in pr.events.chunks(batch_size) {
-                        engine.load_events(chunk)?;
-                    }
-                } else {
-                    engine.load_events(&pr.events)?;
+
+                if let Some(ref pb) = load_pb {
+                    pb.inc(file_size);
                 }
             }
-        }
-    }
 
-    if let Some(pb) = pb {
-        pb.set_position(total_size_bytes);
-        pb.finish_and_clear();
-    }
+            if let Some(pb) = load_pb {
+                pb.finish_and_clear();
+            }
+        }
+
+        if let Some(pb) = pb {
+            pb.set_position(total_size_bytes);
+            pb.finish_and_clear();
+        }
+
+        (engine, results, files, source_files, workers)
+    };
 
     // Apply time filter
     if cli.after.is_some() || cli.before.is_some() {
@@ -1252,18 +1449,33 @@ fn main() -> Result<()> {
         }
     }
 
-    if !cli.quiet && total_events > 10000 {
-        let idx_pb = ProgressBar::new_spinner();
-        idx_pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("  {spinner:.green} Creating indexes...")
-                .unwrap(),
-        );
-        idx_pb.enable_steady_tick(std::time::Duration::from_millis(80));
-        engine.create_indexes()?;
-        idx_pb.finish_and_clear();
-    } else {
-        engine.create_indexes()?;
+    // Create indexes only when queries/analysis will use them
+    let needs_indexes = cli.keyword.is_some()
+        || cli.field_search.is_some()
+        || cli.sql.is_some()
+        || cli.sql_file.is_some()
+        || cli.regex_search.is_some()
+        || cli.distinct.is_some()
+        || cli.anomalies.is_some()
+        || cli.login_analysis.is_some()
+        || cli.ioc_extract.is_some()
+        || compiled_rules.is_some()
+        || !cli.add_index.is_empty();
+
+    if needs_indexes {
+        if !cli.quiet && total_events > 10000 {
+            let idx_pb = ProgressBar::new_spinner();
+            idx_pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("  {spinner:.green} Creating indexes...")
+                    .unwrap(),
+            );
+            idx_pb.enable_steady_tick(std::time::Duration::from_millis(80));
+            engine.create_indexes()?;
+            idx_pb.finish_and_clear();
+        } else {
+            engine.create_indexes()?;
+        }
     }
 
     // Custom index management
@@ -1339,7 +1551,7 @@ fn main() -> Result<()> {
             "[>]".cyan(),
             format!("{}", worker_count).bold()
         );
-        if let Some(max) = max_events {
+        if let Some(max) = cli.max_events {
             println!(
                 "    {} Max Events  {}",
                 "[>]".cyan(),
@@ -1350,9 +1562,25 @@ fn main() -> Result<()> {
     }
 
     if let Some(ref dbfile) = cli.dbfile {
-        engine.export_db(dbfile)?;
+        // If engine is already on-disk (new_on_disk was used), no export needed
+        // Otherwise, export in-memory DB to file
+        if cli.load_db.is_some() {
+            // --load-db + --dbfile: skip (already loaded from file)
+        } else if !dbfile.exists() {
+            // In-memory engine: export to disk
+            engine.export_db(dbfile)?;
+        }
+        // else: already written on disk via new_on_disk
         if !cli.quiet {
-            println!("  {} Database → {:?}", "✓".green(), dbfile);
+            let size = std::fs::metadata(dbfile).map(|m| m.len()).unwrap_or(0);
+            let size_mb = size as f64 / 1_048_576.0;
+            println!(
+                "  {} Database → {:?} ({:.1} MB, {} events)",
+                "✓".green(),
+                dbfile,
+                size_mb,
+                engine.event_count()
+            );
         }
     }
 
@@ -2032,7 +2260,22 @@ fn main() -> Result<()> {
 
     // Anomaly Detection (independent of SIGMA results)
     if let Some(ref anom_path) = cli.anomalies {
+        let anom_spinner = if !cli.quiet {
+            let sp = ProgressBar::new_spinner();
+            sp.set_style(
+                ProgressStyle::default_spinner()
+                    .template("  {spinner:.green} Detecting anomalies...")
+                    .unwrap(),
+            );
+            sp.enable_steady_tick(std::time::Duration::from_millis(100));
+            Some(sp)
+        } else {
+            None
+        };
         let anomalies = muninn::anomaly::detect_anomalies(&engine)?;
+        if let Some(sp) = anom_spinner {
+            sp.finish_and_clear();
+        }
         let output = muninn::anomaly::render_anomalies(&anomalies);
         if !cli.quiet {
             print!("{}", output);
@@ -2045,7 +2288,23 @@ fn main() -> Result<()> {
 
     // Login Analysis (requires unified engine with Security events)
     if let Some(ref login_path) = cli.login_analysis {
-        match muninn::login::analyze_logins(&engine) {
+        let login_spinner = if !cli.quiet {
+            let sp = ProgressBar::new_spinner();
+            sp.set_style(
+                ProgressStyle::default_spinner()
+                    .template("  {spinner:.green} Analyzing logins (4624/4625/4672)...")
+                    .unwrap(),
+            );
+            sp.enable_steady_tick(std::time::Duration::from_millis(100));
+            Some(sp)
+        } else {
+            None
+        };
+        let login_result = muninn::login::analyze_logins(&engine);
+        if let Some(sp) = login_spinner {
+            sp.finish_and_clear();
+        }
+        match login_result {
             Ok(analysis) => {
                 let output = muninn::login::render_login_analysis(&analysis);
                 if !cli.quiet {
@@ -2095,12 +2354,27 @@ fn main() -> Result<()> {
 
     // IOC Extraction (streaming — already collected during file processing)
     if let Some(ref ioc_path) = cli.ioc_extract {
+        let ioc_spinner = if !cli.quiet {
+            let sp = ProgressBar::new_spinner();
+            sp.set_style(
+                ProgressStyle::default_spinner()
+                    .template("  {spinner:.green} Extracting IOCs...")
+                    .unwrap(),
+            );
+            sp.enable_steady_tick(std::time::Duration::from_millis(100));
+            Some(sp)
+        } else {
+            None
+        };
         let iocs = if let Some(collector) = merged_ioc_collector {
             collector.finalize()
         } else {
             // Fallback: extract from unified engine if streaming didn't run
             muninn::ioc::extract_iocs(&engine)?
         };
+        if let Some(sp) = ioc_spinner {
+            sp.finish_and_clear();
+        }
         let output = muninn::ioc::render_iocs(&iocs);
         if !cli.quiet {
             print!("{}", output);
@@ -2159,10 +2433,55 @@ fn main() -> Result<()> {
             }
         }
 
+        // Comprehensive OpenTIP check (--opentip-check)
+        #[cfg(feature = "ioc-enrich")]
+        if let Some(ref opentip_key) = cli.opentip_check {
+            if !cli.quiet {
+                println!(
+                    "  {} Checking IOCs via Kaspersky OpenTIP...",
+                    "\u{25b6}".cyan()
+                );
+            }
+            let client = muninn::opentip::OpenTipClient::new(opentip_key);
+            let opentip_results =
+                client.check_iocs(&iocs, cli.opentip_max, cli.quiet, &cli.opentip_types);
+            if !opentip_results.is_empty() {
+                let report = muninn::opentip::render_opentip_report(&opentip_results);
+                if !cli.quiet {
+                    print!("{}", report);
+                }
+                // Save text report
+                let opentip_txt = ioc_path.with_extension("opentip.txt");
+                save_report(&opentip_txt, "OpenTIP Report", &report, &opentip_results)?;
+                // Save HTML report
+                let opentip_html_path = ioc_path.with_extension("opentip.html");
+                let html = muninn::opentip::render_opentip_html(&opentip_results);
+                std::fs::write(&opentip_html_path, &html)?;
+                // Save JSON report
+                let opentip_json = ioc_path.with_extension("opentip.json");
+                std::fs::write(
+                    &opentip_json,
+                    serde_json::to_string_pretty(&opentip_results)?,
+                )?;
+                if !cli.quiet {
+                    println!(
+                        "  {} OpenTIP report \u{2192} {:?}, {:?}, {:?}",
+                        "\u{2713}".green(),
+                        opentip_txt,
+                        opentip_html_path,
+                        opentip_json
+                    );
+                }
+            }
+        }
+
         let file_output = muninn::ioc::render_iocs_full(&iocs);
         save_report(ioc_path, "IOC Extraction", &file_output, &iocs)?;
+        // Also save CSV
+        let csv_path = ioc_path.with_extension("csv");
+        std::fs::write(&csv_path, muninn::ioc::render_iocs_csv(&iocs))?;
         if !cli.quiet {
-            println!("  {} IOCs → {:?}", "✓".green(), ioc_path);
+            println!("  {} IOCs → {:?}, {:?}", "✓".green(), ioc_path, csv_path);
         }
     }
 
@@ -2212,7 +2531,7 @@ fn main() -> Result<()> {
                 "version": env!("CARGO_PKG_VERSION"),
                 "timestamp": run_timestamp.to_rfc3339(),
                 "duration_sec": format!("{:.1}", elapsed),
-                "source": cli.events.to_string_lossy(),
+                "source": cli.load_db.as_ref().or(cli.events.as_ref()).map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
                 "summary": {
                     "files_scanned": files.len(),
                     "total_events": total_events,
@@ -2293,7 +2612,11 @@ fn main() -> Result<()> {
                 "  {} Entering live monitoring mode (Ctrl+C to stop)...",
                 "▶".green()
             );
-            muninn::live::watch_directory(&cli.events, rules_path)?;
+            if let Some(ref events_path) = cli.events {
+                muninn::live::watch_directory(events_path, rules_path)?;
+            } else if !cli.quiet {
+                println!("  {} --live requires --events to be specified", "✗".red());
+            }
         } else if !cli.quiet {
             println!("  {} --live requires --rules to be specified", "✗".red());
         }

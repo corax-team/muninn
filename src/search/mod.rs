@@ -73,6 +73,33 @@ impl SearchEngine {
         })
     }
 
+    /// Create a new engine backed by an on-disk SQLite file.
+    /// Events are written directly to disk — no RAM limit.
+    pub fn new_on_disk(path: &Path) -> Result<Self> {
+        // Remove existing file to start fresh
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -262144;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA mmap_size = 536870912;
+             PRAGMA page_size = 32768;
+             PRAGMA locking_mode = EXCLUSIVE;",
+        )?;
+
+        register_regexp(&conn)?;
+
+        Ok(SearchEngine {
+            conn,
+            columns: Vec::new(),
+            event_count: 0,
+        })
+    }
+
     pub fn from_file(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         register_regexp(&conn)?;
@@ -104,11 +131,15 @@ impl SearchEngine {
         }
 
         // Deduplicate columns case-insensitively (SQLite column names are case-insensitive)
+        // Skip columns with names > 128 chars (certificate extensions, deeply nested XML)
         let mut seen_lower: HashSet<String> =
             self.columns.iter().map(|c| c.to_lowercase()).collect();
         let mut col_set: Vec<String> = self.columns.clone();
         for ev in events {
             for k in ev.fields.keys() {
+                if k.len() > 128 {
+                    continue; // Skip excessively long column names
+                }
                 let lower = k.to_lowercase();
                 if seen_lower.insert(lower) {
                     col_set.push(k.clone());
@@ -177,30 +208,121 @@ impl SearchEngine {
     }
 
     pub fn create_indexes(&self) -> Result<()> {
+        if self.columns.is_empty() {
+            return Ok(()); // No table created yet (0 events loaded)
+        }
         let index_fields = [
+            // ── Windows EVTX core ──
             "EventID",
             "Channel",
-            "CommandLine",
+            "Provider_Name",
+            "Computer",
+            "Level",
+            "Keywords",
+            "TimeCreated",
+            "SystemTime",
+            // ── Process (Sysmon EID 1, Security 4688) ──
             "Image",
             "ParentImage",
+            "CommandLine",
+            "ParentCommandLine",
+            "ProcessId",
+            "ParentProcessId",
+            "OriginalFileName",
+            "IntegrityLevel",
+            // ── File / Registry (Sysmon EID 11/12/13/14) ──
             "TargetFilename",
+            "TargetObject",
+            "ObjectName",
+            // ── Network (Sysmon EID 3, Firewall) ──
             "SourceIp",
             "DestinationIp",
+            "DestinationPort",
+            "SourcePort",
+            // ── Auth (Security 4624/4625/4648/4672) ──
             "User",
+            "TargetUserName",
+            "SubjectUserName",
             "LogonType",
+            "IpAddress",
+            "WorkstationName",
+            // ── Service / Task / Pipe (7045, Sysmon 17/18) ──
             "ServiceName",
+            "TaskName",
+            "PipeName",
+            // ── Sysmon extended ──
+            "Hashes",
+            "ImageLoaded",
+            "SourceImage",
+            "TargetImage",
+            "QueryName",
+            "CallTrace",
+            // ── Windows Defender ──
+            "ThreatName",
+            "DetectionSource",
+            "ActionName",
+            // ── Syslog / Linux ──
             "hostname",
             "app_name",
+            "procid",
+            "facility",
+            "severity",
             "message",
+            "timestamp",
             "level",
-            "src_ip",
-            "dst_ip",
-            "cs-method",
-            "sc-status",
+            // ── Linux auditd ──
+            "type",
+            "exe",
+            "comm",
+            "syscall",
+            "uid",
+            "pid",
+            "ppid",
+            // ── CEF / LEEF (firewalls, IDS) ──
+            "DeviceVendor",
+            "DeviceProduct",
             "DeviceEventClassID",
+            "Name",
+            "Severity",
+            "src",
+            "dst",
+            "shost",
+            "dhost",
+            "sport",
+            "dport",
+            "act",
+            "proto",
+            // ── Zeek ──
+            "_zeek_log_type",
+            "id_orig_h",
+            "id_resp_h",
+            "id_orig_p",
+            "id_resp_p",
+            "uid",
+            "proto",
+            "service",
+            "query",
+            "conn_state",
+            // ── W3C / IIS / Apache / Nginx ──
+            "c-ip",
+            "s-ip",
+            "cs-method",
+            "cs-uri-stem",
+            "sc-status",
+            "sc-bytes",
+            "cs-username",
+            "cs-version",
+            // ── macOS unified log ──
+            "processImagePath",
+            "subsystem",
+            "category",
             "eventType",
             "eventSource",
+            // ── Generic ──
             "Operation",
+            "src_ip",
+            "dst_ip",
+            "@timestamp",
         ];
         for field in &index_fields {
             if self.columns.iter().any(|c| c == *field) {

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use psl::Psl;
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -172,7 +173,18 @@ fn is_ip_field(name: &str) -> bool {
             | "dest_ip"
             | "src"
             | "dst"
-    ) || (lower.contains("ip") && !lower.contains("script") && !lower.contains("descript"))
+            | "id_orig_h"
+            | "id_resp_h"
+            | "c-ip"
+            | "s-ip"
+            | "shost"
+            | "dhost"
+    ) || (lower.contains("ip")
+        && !lower.contains("script")
+        && !lower.contains("descript")
+        && !lower.contains("pip")
+        && !lower.contains("zip")
+        && !lower.contains("tip"))
         || (lower.contains("address")
             && !lower.contains("email")
             && !lower.contains("mail")
@@ -348,7 +360,7 @@ impl IocCollector {
             url_re: Regex::new(r#"https?://[^\s'"<>\])}]+"#).unwrap(),
             email_re: Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap(),
             domain_re: Regex::new(
-                r#"\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.(?:com|net|org|io|xyz|top|ru|cn|tk|pw|info|biz|cc|me|co|uk|de|fr|jp|br|in|au|gov|edu|mil))\b"#,
+                r#"\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.([a-zA-Z]{2,63}))\b"#,
             )
             .unwrap(),
         }
@@ -544,9 +556,13 @@ impl IocCollector {
                     .record(ts, source_file, "");
             }
         }
-        // Domains
+        // Domains — use PSL (Mozilla Public Suffix List) for validation
         for cap in self.domain_re.captures_iter(text) {
             let domain = cap[1].to_lowercase();
+            // Validate via PSL: only real domains with known TLDs
+            if psl::List.suffix(domain.as_bytes()).is_none() {
+                continue;
+            }
             if !is_noise_domain(&domain) {
                 let key = (IocType::Domain, domain);
                 if !self.entries.contains_key(&key) && self.entries.len() >= self.max_entries {
@@ -614,9 +630,8 @@ pub fn extract_iocs(engine: &SearchEngine) -> Result<Vec<Ioc>> {
     let sha256_re = Regex::new(r"\b([a-fA-F0-9]{64})\b")?;
     let url_re = Regex::new(r#"https?://[^\s'"<>\])}]+"#)?;
     let email_re = Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")?;
-    let domain_re = Regex::new(
-        r#"\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.(?:com|net|org|io|xyz|top|ru|cn|tk|pw|info|biz|cc|me|co|uk|de|fr|jp|br|in|au|gov|edu|mil))\b"#,
-    )?;
+    let domain_re =
+        Regex::new(r#"\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.([a-zA-Z]{2,63}))\b"#)?;
 
     let raw_result = engine.query_sql("SELECT * FROM \"events\"")?;
 
@@ -661,6 +676,9 @@ pub fn extract_iocs(engine: &SearchEngine) -> Result<Vec<Ioc>> {
         }
         for cap in domain_re.captures_iter(&text) {
             let domain = cap[1].to_lowercase();
+            if psl::List.suffix(domain.as_bytes()).is_none() {
+                continue;
+            }
             if !is_noise_domain(&domain) {
                 *ioc_counts.entry((IocType::Domain, domain)).or_default() += 1;
             }
@@ -781,6 +799,7 @@ const NOISE_DOMAINS: &[&str] = &[
     "localhost.com",
     // Kaspersky (common in monitored envs)
     "kaspersky.com",
+    "microsoft.net",
 ];
 
 fn is_noise_url(url: &str) -> bool {
@@ -846,6 +865,7 @@ fn is_noise_url(url: &str) -> bool {
 
 fn is_noise_domain(domain: &str) -> bool {
     let lower = domain.to_ascii_lowercase();
+    // Noise whitelist
     for d in NOISE_DOMAINS {
         if lower == *d || lower.ends_with(&format!(".{}", d)) {
             return true;
@@ -853,6 +873,129 @@ fn is_noise_domain(domain: &str) -> bool {
     }
     // .local / .internal
     if lower.ends_with(".local") || lower.ends_with(".internal") {
+        return true;
+    }
+    // False positives: file extensions caught as TLD (svchost.exe, config.json, etc.)
+    const FALSE_TLDS: &[&str] = &[
+        "exe",
+        "dll",
+        "sys",
+        "bat",
+        "cmd",
+        "ps1",
+        "vbs",
+        "js",
+        "wsf",
+        "msi",
+        "msp",
+        "scr",
+        "com", // com is ambiguous but too noisy from file paths
+        "log",
+        "txt",
+        "cfg",
+        "ini",
+        "xml",
+        "json",
+        "yaml",
+        "yml",
+        "csv",
+        "tsv",
+        "tmp",
+        "bak",
+        "old",
+        "dat",
+        "db",
+        "sqlite",
+        "png",
+        "jpg",
+        "gif",
+        "bmp",
+        "ico",
+        "svg",
+        "doc",
+        "docx",
+        "xls",
+        "xlsx",
+        "pdf",
+        "ppt",
+        "pptx",
+        "zip",
+        "rar",
+        "gz",
+        "tar",
+        "7z",
+        "cab",
+        "evtx",
+        "etl",
+        "dmp",
+        // Web file extensions (webshells caught as domains)
+        "aspx",
+        "asp",
+        "php",
+        "jsp",
+        "cgi",
+        "htm",
+        "html",
+        "js",
+        "css",
+        // Code / config
+        "cs",
+        "java",
+        "py",
+        "rb",
+        "go",
+        "rs",
+        "cpp",
+        "c",
+        "h",
+        "ps1",
+        "psm1",
+        "psd1",
+        "conf",
+        "config",
+        "properties",
+        "env",
+        "toml",
+        "lock",
+        // AV detection name fragments (Kaspersky, etc.)
+        "gen",
+        "heur",
+        "script",
+    ];
+    if let Some(tld) = lower.rsplit('.').next() {
+        if FALSE_TLDS.contains(&tld) {
+            return true;
+        }
+    }
+    // AV detection names: Trojan.Win32.xxx, HEUR:Exploit.xxx, not-a-virus:xxx
+    if lower.starts_with("trojan.")
+        || lower.starts_with("exploit.")
+        || lower.starts_with("heur:")
+        || lower.starts_with("not-a-virus:")
+        || lower.starts_with("backdoor.")
+        || lower.starts_with("worm.")
+        || lower.starts_with("virus.")
+        || lower.starts_with("adware.")
+        || lower.starts_with("riskware.")
+        || lower.starts_with("hacktool.")
+        || lower.starts_with("ransom.")
+        || lower.starts_with("rootkit.")
+        || lower.starts_with("bss:")
+        || lower.contains(".proxyshell")
+        || lower.contains(".generic")
+    {
+        return true;
+    }
+    // Truncated internal hostnames (no valid TLD part)
+    if lower.starts_with("schemas.") || lower.starts_with("mail.") && !lower.contains('.') {
+        // handled by psl check already, but extra guard
+    }
+    // Too short to be a real domain (a.bc)
+    if lower.len() < 4 {
+        return true;
+    }
+    // Single-word "domains" without subdomain that are just words (e.g., "test.log")
+    if !lower.contains('.') {
         return true;
     }
     false
@@ -959,6 +1102,38 @@ pub fn render_iocs(iocs: &[Ioc]) -> String {
 /// Render all IOCs with full values — for file output.
 pub fn render_iocs_full(iocs: &[Ioc]) -> String {
     render_iocs_inner(iocs, usize::MAX, usize::MAX, false)
+}
+
+/// Render IOCs as CSV.
+pub fn render_iocs_csv(iocs: &[Ioc]) -> String {
+    let mut output =
+        String::from("Type,Value,Count,First Seen,Last Seen,Source Fields,Source Files\n");
+    for ioc in iocs {
+        let value = ioc.value.replace('"', "\"\"");
+        let fields = ioc.source_fields.join("; ");
+        let files: Vec<String> = ioc
+            .source_files
+            .iter()
+            .map(|s| {
+                std::path::Path::new(s)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        output.push_str(&format!(
+            "{},\"{}\",{},{},{},\"{}\",\"{}\"\n",
+            ioc.ioc_type,
+            value,
+            ioc.count,
+            ioc.first_seen.as_deref().unwrap_or(""),
+            ioc.last_seen.as_deref().unwrap_or(""),
+            fields,
+            files.join("; "),
+        ));
+    }
+    output
 }
 
 fn render_iocs_inner(iocs: &[Ioc], max_rows: usize, max_value_len: usize, compact: bool) -> String {
