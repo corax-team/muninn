@@ -1,0 +1,30 @@
+title: Unsigned Binary Loaded from Temporary Directory
+id: a1b2c3d4-0006-4000-a000-000000000006
+status: experimental
+description: |
+    Detects the loading of an unsigned binary from a temporary or user-writable directory.
+    Malware frequently drops unsigned DLLs or executables into temp directories and loads
+    them to execute malicious code while evading signature-based detection.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.defense_evasion
+    - attack.t1027.002
+logsource:
+    category: image_load
+    product: windows
+detection:
+    selection_unsigned:
+        Signed: 'false'
+    selection_temp_path:
+        ImageLoaded|contains:
+            - '\AppData\Local\Temp\'
+            - '\AppData\Roaming\'
+            - '\ProgramData\'
+            - '\Windows\Temp\'
+    condition: selection_unsigned and selection_temp_path
+falsepositives:
+    - Legitimate software loading unsigned helper DLLs from temp directories during installation
+    - Development tools and build systems using temp directories
+    - Some enterprise software with unsigned components
+level: low

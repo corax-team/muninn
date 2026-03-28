@@ -1,0 +1,40 @@
+title: APT Head Mare - Data Exfiltration via rclone over SFTP
+id: 4d5e6f7a-8b9c-0d1e-2f3a-4b5c6d7e8f9a
+status: stable
+description: |
+    Detects rclone usage consistent with Head Mare data exfiltration tradecraft.
+    The group drops rclone as C:\ProgramData\wusa.exe, configures it via
+    C:\ProgramData\1.conf, and exfiltrates targeted documents (Office, PDF, PST, ZIP)
+    over SFTP using a SOCKS proxy on 64.7.198[.]109:80. Target file types observed:
+    *.doc, *.docx, *.pdf, *.xls, *.xlsx, *.zip, *.rar, *.pst, *.eml.
+references:
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.exfiltration
+    - attack.t1048
+    - attack.t1567
+    - attack.collection
+    - attack.t1039
+    - threat-actor.head-mare
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_rclone_name:
+        Image|endswith: '\rclone.exe'
+        CommandLine|contains: 'sync'
+    selection_rclone_renamed:
+        # rclone renamed to wusa.exe - system update masquerade
+        Image|endswith: '\wusa.exe'
+        Image|contains: '\ProgramData\'
+    selection_rclone_config:
+        CommandLine|contains:
+            - '--config'
+            - 'sftp'
+        CommandLine|contains: 'sync'
+    condition: selection_rclone_name or selection_rclone_renamed or selection_rclone_config
+falsepositives:
+    - Legitimate use of rclone for backup operations; review destination and source paths
+level: high

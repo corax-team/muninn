@@ -1,0 +1,50 @@
+title: APT Head Mare - Phishing Lure Double Extension Executable Drop
+id: 5e6f7a8b-9c0d-1e2f-3a4b-5c6d7e8f9a0b
+status: stable
+description: |
+    Detects file creation of executables using double extensions, a technique used by
+    Head Mare's PhantomDL dropper to disguise malicious EXEs as documents. Known lures
+    include Russian-language filenames such as "Счет-Фактура.pdf.exe" delivered via
+    CVE-2023-38831 WinRAR exploit archives. The .url file variant (CVE-2024-43451)
+    uses filenames like "Сопроводительное письмо.docx" inside ZIP archives.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://securelist.com/ntlm-abuse-in-2025/118132/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.initial-access
+    - attack.t1566.001
+    - attack.defense-evasion
+    - attack.t1036.007
+    - cve.2023-38831
+    - cve.2024-43451
+    - threat-actor.head-mare
+    - threat-actor.phantomcore
+logsource:
+    product: windows
+    category: file_event
+detection:
+    selection_double_ext:
+        TargetFilename|endswith: '.exe'
+        TargetFilename|contains:
+            - '.pdf.'
+            - '.doc.'
+            - '.docx.'
+            - '.xls.'
+            - '.xlsx.'
+            - '.ppt.'
+            - '.pptx.'
+            - '.txt.'
+            - '.jpg.'
+            - '.png.'
+    selection_url_lure:
+        TargetFilename|endswith: '.url'
+        TargetFilename|contains:
+            - '\Temp\'
+            - '\AppData\'
+            - '\Downloads\'
+    condition: selection_double_ext or selection_url_lure
+falsepositives:
+    - Unlikely for .pdf.exe; .url files in Downloads may need tuning per environment
+level: high

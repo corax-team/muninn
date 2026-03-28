@@ -1,0 +1,31 @@
+title: APT Head Mare - Event Log Clearing via PowerShell
+id: 3c4d5e6f-7a8b-9c0d-1e2f-3a4b5c6d7e8f
+status: stable
+description: |
+    Detects the PowerShell one-liner used by Head Mare to clear all Windows Event Logs
+    before finishing an intrusion. The command iterates over all log names via
+    Get-EventLog and calls Clear-EventLog on each, eliminating forensic artefacts.
+    This pattern was documented in the Kaspersky Head Mare / Twelve collaboration report.
+references:
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.defense-evasion
+    - attack.t1070.001
+    - threat-actor.head-mare
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains|all:
+            - 'Get-EventLog'
+            - 'Clear-EventLog'
+    condition: selection
+falsepositives:
+    - Automated log rotation scripts in highly controlled environments (very rare)
+level: high

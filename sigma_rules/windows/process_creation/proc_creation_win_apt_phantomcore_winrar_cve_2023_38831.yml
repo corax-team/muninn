@@ -1,0 +1,48 @@
+title: PhantomCore CVE-2023-38831 WinRAR Exploit - Suspicious Child Process
+id: 8b3a7d01-f4c2-4e9a-b5d1-a3e7c6f09b12
+status: test
+description: |
+    Detects WinRAR spawning suspicious child processes, indicative of CVE-2023-38831 exploitation.
+    PhantomCore (Head Mare) uses weaponized RAR archives containing a decoy document and a folder
+    with an identical base name. When the user opens the "document," WinRAR executes the payload
+    from the similarly-named folder. This is the primary initial access vector for this group.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://www.group-ib.com/blog/cve-2023-38831-winrar-zero-day/
+    - https://nvd.nist.gov/vuln/detail/CVE-2023-38831
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.initial-access
+    - attack.execution
+    - attack.t1203
+    - attack.t1204.002
+    - cve.2023.38831
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_parent:
+        ParentImage|endswith:
+            - '\winrar.exe'
+            - '\rar.exe'
+            - '\unrar.exe'
+    selection_child_shell:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\rundll32.exe'
+            - '\regsvr32.exe'
+    selection_child_temp:
+        Image|contains:
+            - '\AppData\Local\Temp\'
+            - '\Users\Public\'
+            - '\Windows\Temp\'
+    condition: selection_parent and (selection_child_shell or selection_child_temp)
+falsepositives:
+    - Legitimate self-extracting archives with post-extraction scripts (rare)
+level: high

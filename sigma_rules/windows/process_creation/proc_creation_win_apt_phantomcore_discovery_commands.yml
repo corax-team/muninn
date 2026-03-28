@@ -1,0 +1,56 @@
+title: PhantomCore Post-Compromise Discovery Commands
+id: da8fcb06-e9b7-4d4f-a0c6-f8dcabe54a67
+status: test
+description: |
+    Detects rapid execution of multiple reconnaissance/discovery commands commonly used by
+    PhantomCore (Head Mare) after initial compromise. The group runs a standardized set of
+    commands to enumerate the target environment: systeminfo, whoami, ipconfig, net group,
+    nltest, and net view.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://www.facct.ru/blog/phantomcore/
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.discovery
+    - attack.t1082
+    - attack.t1016
+    - attack.t1069.002
+    - attack.t1018
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_systeminfo:
+        CommandLine|contains: 'systeminfo'
+    selection_whoami:
+        CommandLine|contains:
+            - 'whoami /all'
+            - 'whoami /priv'
+            - 'whoami /groups'
+    selection_ipconfig:
+        CommandLine|contains:
+            - 'ipconfig /all'
+            - 'ipconfig /displaydns'
+    selection_domain_enum:
+        CommandLine|contains:
+            - 'net group "Domain Admins"'
+            - 'net group "Domain Controllers"'
+            - 'net group "Enterprise Admins"'
+            - 'net localgroup administrators'
+    selection_network_enum:
+        CommandLine|contains:
+            - 'nltest /dclist'
+            - 'nltest /domain_trusts'
+            - 'net view'
+            - 'net share'
+    selection_arp_route:
+        CommandLine|contains:
+            - 'arp -a'
+            - 'route print'
+            - 'netstat -ano'
+    condition: 3 of selection_*
+falsepositives:
+    - System administrators running diagnostic scripts
+    - IT inventory tools
+level: medium

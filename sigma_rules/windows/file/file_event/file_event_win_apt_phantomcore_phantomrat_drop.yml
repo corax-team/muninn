@@ -1,0 +1,44 @@
+title: PhantomCore PhantomRAT Payload Drop in Suspicious Location
+id: ad1cde09-bcd0-4a7c-d3f9-cbafdef87d90
+status: test
+description: |
+    Detects file creation events indicative of PhantomRAT or PhantomDL being dropped in
+    user-writable directories with names mimicking legitimate Microsoft processes.
+    PhantomCore (Head Mare) typically drops payloads in %APPDATA%\Microsoft\ subdirectories
+    or %ProgramData% with deceptive filenames.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://www.facct.ru/blog/phantomcore/
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.persistence
+    - attack.defense-evasion
+    - attack.t1036.005
+    - attack.t1105
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection_path:
+        TargetFilename|contains:
+            - '\AppData\Roaming\Microsoft\'
+            - '\AppData\Local\Microsoft\'
+            - '\ProgramData\Microsoft\'
+            - '\AppData\Roaming\Update\'
+            - '\AppData\Local\Temp\'
+    selection_masquerade:
+        TargetFilename|endswith:
+            - '\svchost.exe'
+            - '\RuntimeBroker.exe'
+            - '\SecurityHealthService.exe'
+            - '\taskhostw.exe'
+            - '\dllhost.exe'
+            - '\conhost.exe'
+            - '\csrss.exe'
+            - '\update.exe'
+            - '\MicrosoftEdgeUpdate.exe'
+    condition: selection_path and selection_masquerade
+falsepositives:
+    - Certain legitimate software updaters may create executables in AppData
+level: high

@@ -1,0 +1,34 @@
+title: Remote Management Tool Executed from Non-Standard Path
+id: a1b2c3d4-0005-4000-a000-000000000005
+status: experimental
+description: |
+    Detects execution of known remote management tools (MeshAgent, AnyDesk, TeamViewer,
+    RustDesk, ScreenConnect) from non-standard installation paths. Threat actors commonly
+    deploy portable or renamed versions of these tools from temporary or user-writable
+    directories to establish persistent remote access without proper installation.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.persistence
+    - attack.t1219
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_rmm_tools:
+        Image|endswith:
+            - '\MeshAgent.exe'
+            - '\AnyDesk.exe'
+            - '\TeamViewer.exe'
+            - '\rustdesk.exe'
+            - '\ScreenConnect.ClientService.exe'
+            - '\ScreenConnect.WindowsClient.exe'
+    filter_standard_paths:
+        Image|startswith:
+            - 'C:\Program Files\'
+            - 'C:\Program Files (x86)\'
+    condition: selection_rmm_tools and not filter_standard_paths
+falsepositives:
+    - Portable versions of remote management tools used by IT staff from USB drives
+    - Temporary installations during support sessions
+level: high

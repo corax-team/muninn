@@ -26,7 +26,7 @@
 
 ## Overview
 
-Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3100+ SIGMA rules, 370+ MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
+Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3200+ SIGMA rules, 370+ MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
 
 Feed it a directory of logs — Muninn auto-detects the format, loads events into a SQLite database, and runs analysis. Save results to a persistent database with `--dbfile` and come back anytime: apply new SIGMA rules, run SQL queries, check IOCs — without re-parsing source files.
 
@@ -51,7 +51,7 @@ Pre-built binaries: [Releases](https://github.com/corax-security/muninn/releases
 ```bash
 curl -sL https://github.com/corax-security/muninn/releases/latest/download/muninn-linux-amd64 -o muninn
 chmod +x muninn
-./muninn -e /path/to/logs/ -r rules/ --stats
+./muninn -e /path/to/logs/ -r sigma_rules/ --stats
 ```
 
 **Windows:**
@@ -427,7 +427,7 @@ muninn --config muninn.yaml
 | | |
 |---|---|
 | **15+ formats** | EVTX, JSON, CSV, XML, Syslog, CEF, LEEF, Zeek, W3C, Auditd, macOS — auto-detected |
-| **3100+ SIGMA rules** | Full [SigmaHQ](https://github.com/SigmaHQ/sigma) ruleset — download with `--download-rules` |
+| **3200+ SIGMA rules** | Full [SigmaHQ](https://github.com/SigmaHQ/sigma) ruleset — download with `--download-rules` |
 | **SIGMA compiler** | YAML → SQL with modifiers: `contains`, `endswith`, `startswith`, `re`, `base64`, `base64offset`, `windash`, `cidr`, `all`, `gt/gte/lt/lte` |
 | **Search engine** | SQLite-backed: keyword, field, regex, raw SQL |
 | **Single binary** | Static, no runtime dependencies |
@@ -845,11 +845,11 @@ muninn -e ./evidence-before/ -r sigma-rules/ --diff ./evidence-after/
 
 ## SIGMA Rules
 
-3100+ rules from [SigmaHQ](https://github.com/SigmaHQ/sigma). Download directly or use your own:
+3200+ rules from [SigmaHQ](https://github.com/SigmaHQ/sigma). Download directly or use your own:
 
 ```bash
 # Download rules from SigmaHQ (requires --features download)
-muninn --download-rules all                    # all 3100+ rules → sigma-rules/
+muninn --download-rules all                    # all 3200+ rules → sigma-rules/
 muninn --download-rules core                   # curated core ruleset
 muninn --download-rules core+                  # core + extended
 muninn --download-rules emerging               # emerging threats addon
@@ -1070,7 +1070,7 @@ cargo build --release --features "all-parsers,cli" --target x86_64-pc-windows-ms
 
 ```bash
 git clone --depth=1 https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES.git
-muninn -e EVTX-ATTACK-SAMPLES/ -r rules/windows/ --timeline --killchain --threat-score
+muninn -e EVTX-ATTACK-SAMPLES/ -r sigma_rules/windows/ --timeline --killchain --threat-score
 ```
 
 ## Performance
@@ -1095,7 +1095,7 @@ SIGMA rules in `rules/` licensed under [DRL 1.1](https://github.com/SigmaHQ/Dete
 
 ## Обзор
 
-Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3100+ SIGMA-правил, 370+ техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
+Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3200+ SIGMA-правил, 370+ техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
 
 Укажите директорию с логами — Muninn сам определит формат, загрузит события в SQLite и выполнит анализ. Результаты можно сохранить в базу и возвращаться к ним сколько угодно: прогонять новые SIGMA-правила, делать SQL-запросы, проверять индикаторы — без повторного парсинга.
 
@@ -1120,7 +1120,7 @@ Muninn — инструмент для расследования инциден
 ```bash
 curl -sL https://github.com/corax-security/muninn/releases/latest/download/muninn-linux-amd64 -o muninn
 chmod +x muninn
-./muninn -e /path/to/logs/ -r rules/ --stats
+./muninn -e /path/to/logs/ -r sigma_rules/ --stats
 ```
 
 **Windows:**
@@ -1167,7 +1167,7 @@ muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-typ
 | | |
 |---|---|
 | **15+ форматов** | EVTX, JSON, CSV, XML, Syslog, CEF, LEEF, Zeek, W3C, Auditd, macOS — формат определяется автоматически |
-| **3100+ SIGMA-правил** | Полный набор [SigmaHQ](https://github.com/SigmaHQ/sigma), загрузка через `--download-rules` |
+| **3200+ SIGMA-правил** | Полный набор [SigmaHQ](https://github.com/SigmaHQ/sigma), загрузка через `--download-rules` |
 | **Компилятор SIGMA** | YAML → SQL, модификаторы: `contains`, `endswith`, `startswith`, `re`, `base64`, `base64offset`, `windash`, `cidr`, `all`, `gt/gte/lt/lte` |
 | **Поисковый движок** | SQLite: ключевые слова, поля, регулярки, произвольный SQL |
 | **Один бинарник** | Статическая сборка, ничего не тянет за собой |

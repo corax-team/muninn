@@ -1,0 +1,33 @@
+title: APT Head Mare - CobInt Backdoor VBS Loader Execution
+id: d7a4b5c3-0e1f-6d8a-c13a-4f5e6d7a8b9c
+status: stable
+description: |
+    Detects Head Mare's CobInt backdoor loader pattern: wscript.exe executing
+    mcdrive.vbs from the C:\ProgramData\MicrosoftDrive\ directory, which serves as
+    a VBS wrapper for the PowerShell-based CobInt stage (mcdrive.ps1). Persistence
+    is established via a Run key value named "mcdrivesvc".
+references:
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.execution
+    - attack.t1059.005
+    - attack.persistence
+    - attack.t1547.001
+    - attack.defense-evasion
+    - attack.t1036
+    - threat-actor.head-mare
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection:
+        Image|endswith: '\wscript.exe'
+        CommandLine|contains:
+            - 'MicrosoftDrive\mcdrive.vbs'
+            - 'mcdrive.vbs'
+    condition: selection
+falsepositives:
+    - None known
+level: critical

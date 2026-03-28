@@ -1,0 +1,43 @@
+title: Deep Process Chain from Office or Archive Application
+id: a1b2c3d4-0015-4000-a000-000000000015
+status: experimental
+description: |
+    Detects Office applications or archive handlers spawning suspicious child processes
+    such as command interpreters, script hosts, or living-off-the-land binaries. This
+    pattern is a strong indicator of document-based or archive-based exploitation, where
+    a malicious macro, embedded object, or archive exploit launches a payload through
+    a chain of interpreter processes.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.execution
+    - attack.t1059
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_parent:
+        ParentImage|endswith:
+            - '\WINWORD.EXE'
+            - '\EXCEL.EXE'
+            - '\POWERPNT.EXE'
+            - '\winrar.exe'
+            - '\7zFM.exe'
+            - '\7zG.exe'
+    selection_child:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\rundll32.exe'
+            - '\certutil.exe'
+            - '\mshta.exe'
+            - '\regsvr32.exe'
+    condition: selection_parent and selection_child
+falsepositives:
+    - Legitimate Office add-ins that invoke command-line tools
+    - Document templates with approved automation macros
+    - Self-extracting archives running legitimate post-extraction scripts
+level: high

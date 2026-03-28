@@ -1,0 +1,36 @@
+title: PhantomCore Ngrok Tunnel Execution
+id: be6daf04-c7f5-4b2d-e8a4-d6baf9c32e45
+status: test
+description: |
+    Detects execution of ngrok, a reverse tunneling tool used by PhantomCore (Head Mare)
+    for C2 communications and persistent access to compromised networks. The group uses
+    ngrok tunnels to bypass network-level controls and establish reliable C2 channels.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://ngrok.com/
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.command-and-control
+    - attack.t1572
+    - attack.t1090
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_binary:
+        Image|endswith: '\ngrok.exe'
+    selection_cmdline:
+        CommandLine|contains:
+            - 'ngrok'
+            - 'tcp 0.0.0.0'
+            - 'tunnel'
+            - 'authtoken'
+    selection_tunnel_args:
+        CommandLine|contains|all:
+            - 'tcp'
+            - '0.0.0.0'
+    condition: selection_binary or (selection_cmdline and selection_tunnel_args)
+falsepositives:
+    - Legitimate use of ngrok by developers for local testing (should be rare in production)
+level: high

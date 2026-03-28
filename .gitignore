@@ -21,10 +21,8 @@ Thumbs.db
 # Test artifacts
 detected_events.json
 
-# Sigma rule cache
-.sigma-rules/
-
-# Rulesets (generated)
+# Downloaded rulesets (--download-rules output)
+sigma-rules/
 rulesets/
 
 # Muninn output artifacts

@@ -1,0 +1,32 @@
+title: Registry Access to VM Detection Keys
+id: a1b2c3d4-0008-4000-a000-000000000008
+status: experimental
+description: |
+    Detects direct registry access to keys commonly used for virtual machine detection.
+    Malware queries these registry paths to determine if it is running inside a virtual
+    machine or sandbox environment, and may alter its behavior or terminate execution
+    if virtualization artifacts are found.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.discovery
+    - attack.t1497.001
+logsource:
+    category: registry_access
+    product: windows
+detection:
+    selection_vm_keys:
+        TargetObject|contains:
+            - '\Services\Disk\Enum'
+            - '\DriverDesc'
+            - '\SystemBiosVersion'
+            - '\VideoBiosVersion'
+            - '\HARDWARE\ACPI\DSDT\VBOX'
+            - '\HARDWARE\ACPI\FADT\VBOX'
+            - '\SOFTWARE\VMware, Inc.'
+            - '\SOFTWARE\Oracle\VirtualBox'
+    condition: selection_vm_keys
+falsepositives:
+    - Legitimate system management or inventory software reading hardware information
+    - Hypervisor guest tools performing configuration checks
+level: medium

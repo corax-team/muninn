@@ -1,0 +1,36 @@
+title: APT Head Mare - Registry Persistence via Run Key
+id: a3f1d2e4-7b8c-4a5f-9e0d-1c2b3a4d5e6f
+status: stable
+description: |
+    Detects Head Mare / PhantomCore persistence via HKCU and HKLM Run keys using
+    known value names observed in the wild: MicrosoftUpdateCore, MicrosoftUpdateCoree
+    (PhantomCore RAT) and mcdrivesvc (CobInt VBS loader). These names masquerade as
+    legitimate Microsoft update services.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.persistence
+    - attack.t1547.001
+    - attack.defense-evasion
+    - attack.t1036
+    - threat-actor.head-mare
+    - threat-actor.phantomcore
+logsource:
+    product: windows
+    category: registry_set
+detection:
+    selection_runkey:
+        TargetObject|contains:
+            - '\Software\Microsoft\Windows\CurrentVersion\Run'
+            - '\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+        TargetObject|endswith:
+            - '\MicrosoftUpdateCore'
+            - '\MicrosoftUpdateCoree'
+            - '\mcdrivesvc'
+    condition: selection_runkey
+falsepositives:
+    - None known
+level: high

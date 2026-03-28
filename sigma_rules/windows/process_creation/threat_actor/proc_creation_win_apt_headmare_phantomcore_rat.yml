@@ -1,0 +1,37 @@
+title: APT Head Mare - PhantomCore RAT Execution from AppData
+id: b5e2f3a1-8c9d-4b6e-af1e-2d3c4b5e6f7a
+status: stable
+description: |
+    Detects execution of PhantomCore RAT using its known file names and locations.
+    The malware uses srvhost.exe / srvhostt.exe placed in the AppData\Microsoft\Windows
+    directory to blend in with legitimate Windows processes. A scheduled task named
+    MicrosoftUpdateCore is also used for persistence.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.execution
+    - attack.t1059
+    - attack.persistence
+    - attack.t1053.005
+    - attack.defense-evasion
+    - attack.t1036.005
+    - threat-actor.head-mare
+    - threat-actor.phantomcore
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_image:
+        Image|contains: '\AppData\'
+        Image|endswith:
+            - '\srvhost.exe'
+            - '\srvhostt.exe'
+    selection_task:
+        Image|endswith: '\srvhost.exe'
+        ParentImage|endswith: '\taskeng.exe'
+    condition: 1 of selection_*
+falsepositives:
+    - None known; svchost.exe is a system process located in System32, not AppData
+level: critical

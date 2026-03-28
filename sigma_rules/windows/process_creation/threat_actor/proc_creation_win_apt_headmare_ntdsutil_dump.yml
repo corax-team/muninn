@@ -1,0 +1,30 @@
+title: APT Head Mare - NTDS Credential Dump via ntdsutil IFM
+id: f9c6d7e5-2a3b-8f0c-e35c-6b7a8f9c0d1e
+status: stable
+description: |
+    Detects ntdsutil.exe used to create an IFM (Install From Media) copy of Active
+    Directory, which extracts ntds.dit and SYSTEM/SECURITY registry hives for offline
+    credential extraction. This technique was observed in Head Mare intrusions targeting
+    Russian organisations. The dump is typically staged to C:\temp\Active Directory\.
+references:
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+    - https://adsecurity.org/?p=2398
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.credential-access
+    - attack.t1003.003
+    - threat-actor.head-mare
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection:
+        Image|endswith: '\ntdsutil.exe'
+        CommandLine|contains|all:
+            - 'ifm'
+            - 'create full'
+    condition: selection
+falsepositives:
+    - Legitimate Active Directory IFM creation by domain administrators (scheduled maintenance)
+level: high

@@ -1,0 +1,54 @@
+title: PhantomCore Pre-Ransomware Shadow Copy Deletion and Recovery Inhibition
+id: eb9adc07-fac8-4e5a-b1d7-a9edbcf65b78
+status: test
+description: |
+    Detects shadow copy deletion and recovery disabling commands used by PhantomCore (Head Mare)
+    prior to deploying LockBit 3.0 or Babuk ransomware. This is a critical indicator of imminent
+    ransomware deployment and data destruction.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://www.microsoft.com/en-us/security/blog/2022/10/27/detecting-and-preventing-lsass-credential-dumping-attacks/
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.impact
+    - attack.t1490
+    - attack.t1486
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_vssadmin:
+        CommandLine|contains|all:
+            - 'vssadmin'
+            - 'delete'
+            - 'shadows'
+    selection_wmic_shadow:
+        CommandLine|contains|all:
+            - 'wmic'
+            - 'shadowcopy'
+            - 'delete'
+    selection_bcdedit_recovery:
+        CommandLine|contains|all:
+            - 'bcdedit'
+            - 'recoveryenabled'
+            - 'no'
+    selection_bcdedit_policy:
+        CommandLine|contains|all:
+            - 'bcdedit'
+            - 'bootstatuspolicy'
+            - 'ignoreallfailures'
+    selection_wbadmin:
+        CommandLine|contains|all:
+            - 'wbadmin'
+            - 'delete'
+            - 'catalog'
+    selection_powershell_shadow:
+        CommandLine|contains|all:
+            - 'Get-WmiObject'
+            - 'Win32_ShadowCopy'
+            - 'Delete'
+    condition: 1 of selection_*
+falsepositives:
+    - Legitimate backup rotation scripts (should be baselined)
+level: critical

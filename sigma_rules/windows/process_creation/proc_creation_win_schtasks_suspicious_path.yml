@@ -1,0 +1,33 @@
+title: Scheduled Task Creation via Command Line
+id: a1b2c3d4-0004-4000-a000-000000000004
+status: experimental
+description: |
+    Detects the creation of a scheduled task via schtasks.exe where the task action points to
+    a suspicious user-writable directory. Attackers use scheduled tasks for persistence, often
+    pointing them to payloads staged in AppData, ProgramData, or Temp directories to survive
+    reboots and maintain access.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.persistence
+    - attack.t1053.005
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_schtasks:
+        Image|endswith: '\schtasks.exe'
+    selection_create:
+        CommandLine|contains: '/create'
+    selection_suspicious_path:
+        CommandLine|contains:
+            - '\AppData\'
+            - '\ProgramData\'
+            - '\Temp\'
+            - '\Users\Public\'
+            - '\Windows\Temp\'
+    condition: selection_schtasks and selection_create and selection_suspicious_path
+falsepositives:
+    - Legitimate software creating scheduled tasks for updates from AppData directories
+    - System administration scripts using ProgramData for task storage
+level: medium

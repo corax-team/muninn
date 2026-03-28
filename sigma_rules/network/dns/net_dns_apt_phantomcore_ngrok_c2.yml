@@ -1,0 +1,34 @@
+title: PhantomCore Ngrok C2 DNS Query
+id: cf7eba05-d8a6-4c3e-f9b5-e7cbfad43f56
+status: test
+description: |
+    Detects DNS queries to ngrok-related domains used by PhantomCore (Head Mare)
+    for C2 tunneling. The group routes C2 traffic through ngrok tunnels to evade
+    network-based detection and bypass firewall rules.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://ngrok.com/
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.command-and-control
+    - attack.t1572
+    - attack.t1071.001
+logsource:
+    category: dns
+detection:
+    selection:
+        query|endswith:
+            - '.ngrok.io'
+            - '.ngrok-free.app'
+            - '.ngrok.app'
+            - '.ngrok.dev'
+    selection_connect:
+        query|contains:
+            - 'tunnel.ngrok'
+            - 'connect.ngrok'
+            - 'update.ngrok'
+    condition: 1 of selection*
+falsepositives:
+    - Legitimate developer use of ngrok for testing
+level: high

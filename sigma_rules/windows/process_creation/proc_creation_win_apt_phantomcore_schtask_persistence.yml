@@ -1,0 +1,47 @@
+title: PhantomCore Suspicious Scheduled Task Creation - Microsoft Service Impersonation
+id: ad5c9f03-b6e4-4a1c-d7f3-c5a9e8b21d34
+status: test
+description: |
+    Detects creation of scheduled tasks with names mimicking legitimate Microsoft services,
+    pointing to executables in user-writable directories. PhantomCore (Head Mare) uses this
+    technique for persistence, creating tasks like "MicrosoftUpdateService" or
+    "WindowsDefenderService" that execute PhantomRAT or PhantomDL from %APPDATA% or %ProgramData%.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://www.facct.ru/blog/phantomcore/
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.persistence
+    - attack.t1053.005
+    - attack.t1036.005
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_schtasks:
+        Image|endswith: '\schtasks.exe'
+        CommandLine|contains: '/create'
+    selection_fake_names:
+        CommandLine|contains:
+            - 'MicrosoftUpdate'
+            - 'WindowsDefender'
+            - 'RuntimeBroker'
+            - 'SystemUpdate'
+            - 'WindowsSecurityService'
+            - 'SecurityHealthService'
+            - 'EdgeUpdate'
+            - 'OneDriveUpdate'
+            - 'AdobeUpdate'
+            - 'ChromeUpdate'
+            - 'MicrosoftSync'
+    selection_user_path:
+        CommandLine|contains:
+            - '\AppData\'
+            - '\ProgramData\'
+            - '\Users\Public\'
+            - '\Windows\Temp\'
+    condition: selection_schtasks and selection_fake_names and selection_user_path
+falsepositives:
+    - Legitimate software updaters that create tasks with similar names in user directories (unlikely)
+level: high

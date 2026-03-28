@@ -1,0 +1,57 @@
+title: APT Head Mare - Tunneling and Proxy Tool Execution
+id: 2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e
+status: stable
+description: |
+    Detects execution of tunneling and proxy utilities used by Head Mare to establish
+    covert C2 channels and bypass network controls. The group uses legitimate tools
+    (ngrok, cloudflared, localtonet) alongside offensive proxies (revsocks, rsockstun,
+    gost) to create persistent outbound tunnels. These tools are often renamed or placed
+    in system directories to evade detection.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.command-and-control
+    - attack.t1572
+    - attack.t1090
+    - attack.t1071.001
+    - attack.defense-evasion
+    - attack.t1036.005
+    - threat-actor.head-mare
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_by_name:
+        Image|endswith:
+            - '\ngrok.exe'
+            - '\cloudflared.exe'
+            - '\localtonet.exe'
+            - '\revsocks.exe'
+            - '\rsockstun.exe'
+            - '\gost.exe'
+    selection_by_cmdline:
+        CommandLine|contains:
+            - 'localtonet'
+            - 'rsockstun'
+            - 'revsocks'
+            - ' tunnel '
+        CommandLine|contains:
+            - 'ngrok'
+            - 'cloudflare'
+    selection_fake_names:
+        # Known Head Mare renamed tunnel tools
+        Image|endswith:
+            - '\System32\winuac.exe'
+            - '\System32\winsw.exe'
+        CommandLine|contains:
+            - 'tunnel'
+            - '--config'
+            - 'socks'
+    condition: 1 of selection_*
+falsepositives:
+    - Legitimate use of ngrok or cloudflared by developers for testing (low in corporate env)
+    - Authorized red team exercises
+level: high

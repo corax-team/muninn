@@ -1,0 +1,40 @@
+title: File With Double Extension Extracted From Archive
+id: a1b2c3d4-0002-4000-a000-000000000002
+status: experimental
+description: |
+    Detects creation of files with double extensions, a common social engineering technique
+    where attackers disguise executable files as documents. For example, a file named
+    "invoice.pdf.exe" appears as a PDF to the user but is actually an executable.
+    This is frequently used in phishing campaigns and archive-based exploitation.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.initial_access
+    - attack.t1036.007
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection_double_ext:
+        TargetFilename|re:
+            - '.*\.pdf\.exe$'
+            - '.*\.pdf\.scr$'
+            - '.*\.pdf\.com$'
+            - '.*\.pdf\.pif$'
+            - '.*\.doc\.exe$'
+            - '.*\.doc\.scr$'
+            - '.*\.docx\.exe$'
+            - '.*\.xlsx\.exe$'
+            - '.*\.xls\.exe$'
+            - '.*\.pptx\.exe$'
+            - '.*\.jpg\.exe$'
+            - '.*\.png\.exe$'
+            - '.*\.txt\.exe$'
+            - '.*\.txt\.scr$'
+            - '.*\.rtf\.exe$'
+            - '.*\.csv\.exe$'
+    condition: selection_double_ext
+falsepositives:
+    - Legitimate software with unusual naming conventions
+    - Development or testing environments
+level: high

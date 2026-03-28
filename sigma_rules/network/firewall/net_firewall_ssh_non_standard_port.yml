@@ -1,0 +1,26 @@
+title: SSH Traffic on Non-Standard Port
+id: a1b2c3d4-0011-4000-a000-000000000011
+status: experimental
+description: |
+    Detects SSH protocol traffic on ports other than the standard port 22. Attackers
+    frequently tunnel SSH connections over non-standard ports to bypass firewall rules
+    and network monitoring that only inspects standard service ports. This technique
+    is used for covert command-and-control channels and data exfiltration.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.command_and_control
+    - attack.t1572
+logsource:
+    category: firewall
+detection:
+    selection_ssh:
+        app-proto: 'ssh'
+    filter_standard_port:
+        dst_port: 22
+    condition: selection_ssh and not filter_standard_port
+falsepositives:
+    - Legitimate SSH services intentionally configured on non-standard ports for security
+    - Git over SSH on custom ports
+    - Development and staging environments using alternative SSH ports
+level: medium

@@ -1,0 +1,54 @@
+title: APT Head Mare - Known C2 Infrastructure Connections
+id: 6f7a8b9c-0d1e-2f3a-4b5c-6d7e8f9a0b1c
+status: stable
+description: |
+    Detects network connections to IP addresses attributed to Head Mare / PhantomCore
+    C2 infrastructure. These IPs have been observed hosting PhantomCore RAT C2,
+    PhantomJitter delivery servers, Sliver C2, CobInt C2 (360nvidia.com), and the
+    web-telegram.uk payload staging domain. Sources: Kaspersky Head Mare reports
+    (September 2024, January 2025) and NTLM abuse report (2025).
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+    - https://securelist.com/ntlm-abuse-in-2025/118132/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.command-and-control
+    - attack.t1071
+    - attack.t1095
+    - threat-actor.head-mare
+    - threat-actor.phantomcore
+logsource:
+    category: firewall
+    product: windows
+detection:
+    selection_ips:
+        DestinationIp:
+            # PhantomCore RAT C2 (original campaign)
+            - '188.127.237.46'
+            - '45.87.246.169'
+            - '45.87.245.30'
+            - '185.80.91.107'
+            - '91.219.151.47'
+            - '5.252.176.47'
+            - '5.252.176.77'
+            - '45.11.27.232'
+            # PhantomJitter / CobInt campaign (Head Mare + Twelve)
+            - '45.156.27.115'
+            - '45.156.21.148'
+            - '45.87.246.34'
+            - '185.158.248.107'
+            - '185.229.9.27'
+            - '64.7.198.109'
+            # NTLM coercion campaign (CVE-2024-43451)
+            - '45.87.246.40'
+    selection_domains:
+        DestinationHostname|endswith:
+            - '360nvidia.com'
+            - 'web-telegram.uk'
+            - 'document-file.ru'
+    condition: 1 of selection_*
+falsepositives:
+    - None; these IPs/domains have no legitimate use
+level: critical

@@ -1,0 +1,46 @@
+title: Suspicious HTTP POST to Short URI Path
+id: a1b2c3d4-0010-4000-a000-000000000010
+status: experimental
+description: |
+    Detects HTTP POST requests to short URI paths commonly used by command-and-control
+    frameworks. Many C2 implants use simple, short URI paths such as /command, /cmd,
+    /gate, /beacon, or /task for check-in and tasking communication. This pattern is
+    characteristic of commodity malware and RAT families.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.command_and_control
+    - attack.t1071.001
+logsource:
+    category: proxy
+detection:
+    selection_method:
+        cs-method: 'POST'
+    selection_uri:
+        cs-uri|endswith:
+            - '/command'
+            - '/cmd'
+            - '/gate'
+            - '/beacon'
+            - '/task'
+            - '/submit'
+            - '/upload'
+            - '/data'
+            - '/check'
+            - '/callback'
+            - '/c2'
+            - '/panel'
+    filter_known_domains:
+        cs-host|endswith:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.google.com'
+            - '.googleapis.com'
+            - '.amazon.com'
+            - '.amazonaws.com'
+    condition: selection_method and selection_uri and not filter_known_domains
+falsepositives:
+    - Web applications with legitimate short URI endpoints
+    - Internal APIs using generic path names
+    - IoT device communication patterns
+level: medium

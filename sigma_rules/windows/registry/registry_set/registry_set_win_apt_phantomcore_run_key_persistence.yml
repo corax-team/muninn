@@ -1,0 +1,44 @@
+title: PhantomCore Registry Run Key Persistence to User-Writable Path
+id: fc0bed08-abc9-4f6b-c2e8-bafeced76c89
+status: test
+description: |
+    Detects registry Run key modifications pointing to executables in user-writable directories,
+    a persistence technique used by PhantomCore (Head Mare). The group sets Run keys under
+    HKCU\Software\Microsoft\Windows\CurrentVersion\Run to auto-start PhantomRAT or PhantomDL
+    payloads from %APPDATA%, %LOCALAPPDATA%, or %ProgramData%.
+references:
+    - https://securelist.com/head-mare-hacktivists/113555/
+    - https://www.facct.ru/blog/phantomcore/
+author: Muninn Project
+date: 2026-03-27
+tags:
+    - attack.persistence
+    - attack.t1547.001
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection_key:
+        TargetObject|contains:
+            - '\CurrentVersion\Run\'
+            - '\CurrentVersion\RunOnce\'
+    selection_susp_path:
+        Details|contains:
+            - '\AppData\Roaming\'
+            - '\AppData\Local\Temp\'
+            - '\AppData\Local\Microsoft\'
+            - '\ProgramData\'
+            - '\Users\Public\'
+            - '\Windows\Temp\'
+    selection_exe:
+        Details|endswith:
+            - '.exe'
+            - '.bat'
+            - '.cmd'
+            - '.vbs'
+            - '.js'
+            - '.ps1'
+    condition: selection_key and selection_susp_path and selection_exe
+falsepositives:
+    - Some legitimate applications store executables in AppData and register Run keys
+level: medium

@@ -253,7 +253,7 @@ impl OpenTipClient {
                 let api_key = api_key.clone();
                 let stopped = stopped.clone();
                 let progress = progress.clone();
-                let total = total;
+                let thread_total = total;
                 let is_quiet = quiet;
 
                 std::thread::spawn(move || {
@@ -268,7 +268,7 @@ impl OpenTipClient {
 
                         let n = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         if !is_quiet {
-                            println!("  [{}/{}] Checking {}...", n, total, value);
+                            println!("  [{}/{}] Checking {}...", n, thread_total, value);
                         }
 
                         let endpoint = format!("{}/{}?request={}", BASE_URL, type_label, value);

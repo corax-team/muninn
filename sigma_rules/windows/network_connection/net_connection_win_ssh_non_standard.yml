@@ -1,0 +1,30 @@
+title: SSH Client Connecting to Non-Standard Port
+id: a1b2c3d4-0012-4000-a000-000000000012
+status: experimental
+description: |
+    Detects SSH client applications connecting to destination ports other than the standard
+    port 22. Attackers use non-standard SSH ports to evade network-level detection and
+    firewall rules. This may indicate tunneling, covert C2 communication, or unauthorized
+    remote access through an SSH channel on an unexpected port.
+author: corax-team
+date: 2025/01/01
+tags:
+    - attack.command_and_control
+    - attack.t1572
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection_ssh_clients:
+        Image|endswith:
+            - '\ssh.exe'
+            - '\plink.exe'
+            - '\putty.exe'
+    filter_standard_port:
+        DestinationPort: 22
+    condition: selection_ssh_clients and not filter_standard_port
+falsepositives:
+    - Legitimate SSH connections to servers configured on non-standard ports
+    - Development environments using custom SSH port configurations
+    - Managed service providers using alternative SSH ports
+level: medium

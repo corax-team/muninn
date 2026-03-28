@@ -1,0 +1,43 @@
+title: APT Head Mare - PhantomJitter Process Masquerading in System32
+id: c6f3a4b2-9d0e-5c7f-b02f-3e4d5c6f7a8b
+status: stable
+description: |
+    Detects execution of Head Mare's PhantomJitter backdoor and tunnel tools
+    masquerading as legitimate Windows binaries placed in System32 subdirectories.
+    Known patterns:
+      - calc.exe in C:\Windows\System32\inetsrv\ (PhantomJitter)
+      - winuac.exe in C:\Windows\System32\ (cloudflared tunnel)
+      - winsw.exe in C:\Windows\System32\ (Gost proxy)
+      - wusa.exe in C:\ProgramData\ (rclone exfiltration tool)
+references:
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+author: Corax Security
+date: 2026-03-27
+tags:
+    - attack.defense-evasion
+    - attack.t1036.005
+    - attack.command-and-control
+    - attack.t1071
+    - attack.exfiltration
+    - attack.t1048
+    - threat-actor.head-mare
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_inetsrv_calc:
+        Image|endswith: '\inetsrv\calc.exe'
+    selection_system32_fake:
+        Image|endswith:
+            - '\System32\winuac.exe'
+            - '\System32\winsw.exe'
+    selection_programdata_fake:
+        Image|contains: '\ProgramData\'
+        Image|endswith:
+            - '\wusa.exe'
+            - '\OneDrive.exe'
+            - '\VLC.exe'
+    condition: 1 of selection_*
+falsepositives:
+    - None; calc.exe in inetsrv is not a legitimate configuration
+level: critical
