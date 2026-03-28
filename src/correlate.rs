@@ -1,6 +1,33 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
+/// Parse an ISO-8601-ish timestamp string into seconds since epoch (approximate).
+/// Handles: "2024-01-15T10:30:45", "2024-01-15T10:30:45.123Z", "2024-01-15 10:30:45"
+fn parse_timestamp_secs(ts: &str) -> Option<f64> {
+    let s = ts.trim().replace('T', " ");
+    let s = s.trim_end_matches('Z');
+    // Extract: YYYY-MM-DD HH:MM:SS
+    let parts: Vec<&str> = s.splitn(2, ' ').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let date_parts: Vec<u32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
+    if date_parts.len() != 3 {
+        return None;
+    }
+    let time_str = parts[1].split('.').next().unwrap_or("");
+    let time_parts: Vec<u32> = time_str.split(':').filter_map(|p| p.parse().ok()).collect();
+    if time_parts.len() < 3 {
+        return None;
+    }
+    let (year, month, day) = (date_parts[0], date_parts[1], date_parts[2]);
+    let (hour, minute, second) = (time_parts[0], time_parts[1], time_parts[2]);
+
+    // Simplified days-since-epoch (good enough for duration calculation)
+    let days = (year as f64 - 1970.0) * 365.25 + (month as f64 - 1.0) * 30.44 + day as f64;
+    Some(days * 86400.0 + hour as f64 * 3600.0 + minute as f64 * 60.0 + second as f64)
+}
+
 /// (title, level, tags, matched_rows)
 pub type CorrelationTuple = (String, String, Vec<String>, Vec<HashMap<String, String>>);
 
@@ -147,12 +174,27 @@ pub fn correlate(detections: &[CorrelationTuple]) -> Vec<AttackChain> {
             }
         }
 
+        // Compute duration from first to last timestamp
+        let duration_sec = {
+            let timestamps: Vec<f64> = events
+                .iter()
+                .filter_map(|e| parse_timestamp_secs(&e.timestamp))
+                .collect();
+            if timestamps.len() >= 2 {
+                let min = timestamps.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max = timestamps.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                (max - min).max(0.0)
+            } else {
+                0.0
+            }
+        };
+
         chain_id += 1;
         chains.push(AttackChain {
             id: format!("chain_{}", chain_id),
             entity: entity.clone(),
             events,
-            duration_sec: 0.0, // Would need proper timestamp parsing
+            duration_sec,
             tactics,
         });
     }
@@ -172,12 +214,22 @@ pub fn render_chains(chains: &[AttackChain]) -> String {
     output.push_str(&format!("  {}\n", "═".repeat(70)));
 
     for chain in chains.iter().take(10) {
+        let duration_display = if chain.duration_sec >= 3600.0 {
+            format!("{:.1}h", chain.duration_sec / 3600.0)
+        } else if chain.duration_sec >= 60.0 {
+            format!("{:.0}m", chain.duration_sec / 60.0)
+        } else if chain.duration_sec > 0.0 {
+            format!("{:.0}s", chain.duration_sec)
+        } else {
+            "instant".to_string()
+        };
         output.push_str(&format!(
-            "\n  Chain {} — Entity: {} ({} events, {} tactics)\n",
+            "\n  Chain {} — Entity: {} ({} events, {} tactics, duration: {})\n",
             chain.id,
             chain.entity,
             chain.events.len(),
             chain.tactics.len(),
+            duration_display,
         ));
         if !chain.tactics.is_empty() {
             let tactic_names: Vec<&str> = chain
@@ -250,6 +302,21 @@ mod tests {
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].entity, "admin");
         assert_eq!(chains[0].events.len(), 2);
+        // 5 minutes = 300 seconds
+        assert!((chains[0].duration_sec - 300.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_parse_timestamp() {
+        let a = parse_timestamp_secs("2024-01-15T10:00:00Z").unwrap();
+        let b = parse_timestamp_secs("2024-01-15T10:05:00").unwrap();
+        assert!((b - a - 300.0).abs() < 1.0);
+
+        let c = parse_timestamp_secs("2024-01-15T10:00:00.123Z").unwrap();
+        assert!((c - a).abs() < 1.0);
+
+        assert!(parse_timestamp_secs("invalid").is_none());
+        assert!(parse_timestamp_secs("").is_none());
     }
 
     #[test]

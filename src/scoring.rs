@@ -71,20 +71,11 @@ pub fn compute_scores(detections: &[DetectionTuple]) -> Vec<ThreatScore> {
             ThreatScore {
                 entity,
                 entity_type,
-                score: raw_score,
+                score: raw_score.min(100.0),
                 rules,
             }
         })
         .collect();
-
-    // Normalize to 0-100
-    let max_score = scores.iter().map(|s| s.score).fold(0.0f64, f64::max);
-
-    if max_score > 0.0 {
-        for s in &mut scores {
-            s.score = (s.score / max_score * 100.0).round().min(100.0);
-        }
-    }
 
     scores.sort_by(|a, b| {
         b.score
@@ -167,10 +158,26 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_to_100() {
+    fn test_absolute_scoring_cap() {
+        // Single critical hit: weight=10, count=1 → raw=10, capped at min(10,100)=10
         let mut row = HashMap::new();
         row.insert("Computer".into(), "HOST".into());
         let detections = vec![("Rule".into(), "critical".into(), vec![row])];
+        let scores = compute_scores(&detections);
+        assert_eq!(scores[0].score, 10.0);
+    }
+
+    #[test]
+    fn test_absolute_scoring_cap_at_100() {
+        // 20 critical hits: weight=10, count=20 → raw=200, capped at 100
+        let rows: Vec<HashMap<String, String>> = (0..20)
+            .map(|_| {
+                let mut r = HashMap::new();
+                r.insert("Computer".into(), "HOST".into());
+                r
+            })
+            .collect();
+        let detections = vec![("Rule".into(), "critical".into(), rows)];
         let scores = compute_scores(&detections);
         assert_eq!(scores[0].score, 100.0);
     }

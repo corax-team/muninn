@@ -1,13 +1,16 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-/// (title, level, count, tags, matched_rows)
+/// (title, level, count, tags, matched_rows, description, id, confidence)
 pub type GuiDetectionTuple = (
     String,
     String,
     usize,
     Vec<String>,
     Vec<HashMap<String, String>>,
+    String,
+    String,
+    String,
 );
 
 pub fn generate_html_report(
@@ -16,15 +19,20 @@ pub fn generate_html_report(
 ) -> Result<String> {
     let det_json: Vec<serde_json::Value> = detections
         .iter()
-        .map(|(title, level, count, tags, events)| {
-            serde_json::json!({
-                "title": title,
-                "level": level,
-                "count": count,
-                "tags": tags,
-                "events": events,
-            })
-        })
+        .map(
+            |(title, level, count, tags, events, description, id, confidence)| {
+                serde_json::json!({
+                    "title": title,
+                    "level": level,
+                    "count": count,
+                    "tags": tags,
+                    "events": events,
+                    "description": description,
+                    "id": id,
+                    "confidence": confidence,
+                })
+            },
+        )
         .collect();
 
     let data = serde_json::json!({
@@ -177,6 +185,7 @@ body {{
 .badge-medium {{ background: rgba(227,179,65,0.15); color: var(--medium); border: 1px solid rgba(227,179,65,0.3); }}
 .badge-low {{ background: rgba(88,166,255,0.15); color: var(--low); border: 1px solid rgba(88,166,255,0.3); }}
 .badge-info {{ background: rgba(139,148,158,0.15); color: var(--info); border: 1px solid rgba(139,148,158,0.3); }}
+.badge-lowconf {{ background: rgba(255,200,0,0.12); color: #ffd700; border: 1px solid rgba(255,200,0,0.3); font-size: 0.7em; margin-left: 4px; }}
 
 /* ── Severity distribution bar ── */
 .sev-bar {{
@@ -535,6 +544,7 @@ table.dataTable tbody tr:hover {{ background: var(--bg-hover) !important; }}
       <thead><tr>
         <th>Severity</th>
         <th>Rule</th>
+        <th>Description</th>
         <th>Count</th>
         <th>Techniques</th>
         <th>Tags</th>
@@ -818,10 +828,12 @@ let dtTable;
     const tagBadges = (det.tags||[])
       .filter(t => !t.toLowerCase().startsWith('attack.'))
       .map(t => `<span class="tag">${{escHtml(t)}}</span>`).join(' ');
+    const confBadge = det.confidence === 'low' ? '<span class="badge badge-lowconf">LOW CONF</span>' : '';
 
     tbody.innerHTML += `<tr data-level="${{det.level.toLowerCase()}}">
-      <td><span class="badge badge-${{det.level.toLowerCase()}}">${{det.level.toUpperCase()}}</span></td>
+      <td><span class="badge badge-${{det.level.toLowerCase()}}">${{det.level.toUpperCase()}}</span>${{confBadge}}</td>
       <td>${{escHtml(det.title)}}</td>
+      <td style="color:var(--text-dim);font-size:0.85em;max-width:300px">${{escHtml(det.description || '')}}</td>
       <td>${{det.count}}</td>
       <td>${{techBadges || '-'}}</td>
       <td>${{tagBadges || '-'}}</td>
@@ -851,9 +863,9 @@ function filterDetections() {{
   dtTable.column(0).search(sev).draw();
   // For tactic filtering, we search tags column
   if (tactic) {{
-    dtTable.column(4).search(tactic).draw();
+    dtTable.column(5).search(tactic).draw();
   }} else {{
-    dtTable.column(4).search('').draw();
+    dtTable.column(5).search('').draw();
   }}
 }}
 
@@ -865,10 +877,17 @@ function showEvents(detIdx) {{
     `<span class="badge badge-${{det.level.toLowerCase()}}" style="margin-right:8px">${{det.level.toUpperCase()}}</span> ${{escHtml(det.title)}} &mdash; ${{det.count}} events`;
 
   const body = document.getElementById('modalBody');
+  let descHtml = '';
+  if (det.description) {{
+    descHtml = `<div style="color:var(--text-dim);margin-bottom:12px;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:6px;border-left:3px solid var(--accent);font-size:0.9em">${{escHtml(det.description)}}</div>`;
+  }}
+  if (det.id) {{
+    descHtml += `<div style="color:var(--text-dim);margin-bottom:12px;font-size:0.8em">Rule ID: ${{escHtml(det.id)}}</div>`;
+  }}
   if (det.events.length === 0) {{
-    body.innerHTML = '<p style="color:var(--text-dim)">No event details available.</p>';
+    body.innerHTML = descHtml + '<p style="color:var(--text-dim)">No event details available.</p>';
   }} else {{
-    body.innerHTML = det.events.slice(0, 200).map((ev, i) => {{
+    body.innerHTML = descHtml + det.events.slice(0, 50).map((ev, i) => {{
       const ts = getTimestamp(ev) || '';
       const preview = ts ? ts : Object.values(ev).filter(Boolean).slice(0,2).join(' | ');
       const fields = Object.entries(ev)
@@ -883,8 +902,8 @@ function showEvents(detIdx) {{
         <div class="event-card-body">${{fields}}</div>
       </div>`;
     }}).join('');
-    if (det.events.length > 200) {{
-      body.innerHTML += `<p style="color:var(--text-dim);margin-top:8px">Showing 200 of ${{det.events.length}} events.</p>`;
+    if (det.events.length > 50) {{
+      body.innerHTML += `<p style="color:var(--text-dim);margin-top:8px">Showing 50 of ${{det.events.length}} events.</p>`;
     }}
   }}
   document.getElementById('eventModal').classList.add('show');
@@ -919,6 +938,9 @@ mod tests {
             1usize,
             vec!["attack.execution".into(), "attack.t1059.001".into()],
             vec![event],
+            "Test rule description".into(),
+            "12345678-1234-1234-1234-123456789012".into(),
+            "high".into(),
         )];
 
         let summary = serde_json::json!({

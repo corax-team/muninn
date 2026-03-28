@@ -42,6 +42,29 @@ impl std::fmt::Display for SourceFormat {
     }
 }
 
+impl SourceFormat {
+    /// Canonical string for SQL `_source_format` filters.
+    /// Must match the values used in `compile_logsource()` in sigma/compiler.rs.
+    pub fn as_filter_str(&self) -> &'static str {
+        match self {
+            Self::Evtx => "EVTX",
+            Self::JsonLines | Self::JsonArray => "JSON",
+            Self::Csv => "CSV",
+            Self::Tsv => "TSV",
+            Self::Xml => "XML",
+            Self::Auditd => "Auditd",
+            Self::SysmonLinux => "SysmonLinux",
+            Self::Syslog => "Syslog",
+            Self::Cef => "CEF",
+            Self::Leef => "LEEF",
+            Self::W3cExtended => "W3C",
+            Self::ZeekTsv => "ZeekTsv",
+            Self::MacosUnifiedLog => "macOS",
+            Self::PlainText => "PlainText",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub fields: HashMap<String, String>,
@@ -53,8 +76,14 @@ pub struct Event {
 
 impl Event {
     pub fn new(source_file: &str, source_format: SourceFormat) -> Self {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "_source_format".to_string(),
+            source_format.as_filter_str().to_string(),
+        );
+        fields.insert("_source_file".to_string(), source_file.to_string());
         Event {
-            fields: HashMap::new(),
+            fields,
             raw: String::new(),
             source_file: source_file.to_string(),
             source_format,

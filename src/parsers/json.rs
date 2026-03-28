@@ -21,8 +21,9 @@ pub fn parse_jsonl(path: &Path, source_file: &str) -> Result<Vec<Event>> {
 }
 
 pub fn parse_json_array(path: &Path, source_file: &str) -> Result<Vec<Event>> {
-    let content = std::fs::read_to_string(path)?;
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&content)?;
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let arr: Vec<serde_json::Value> = serde_json::from_reader(reader)?;
     Ok(arr
         .iter()
         .map(|v| flatten_json(v, source_file, SourceFormat::JsonArray))

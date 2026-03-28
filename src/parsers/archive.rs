@@ -129,6 +129,11 @@ fn extract_tar<R: Read>(reader: R, dest: &Path, source: &Path) -> Result<Vec<Pat
         let entry_path = entry.path()?.to_path_buf();
         let out_path = dest.join(&entry_path);
 
+        if !out_path.starts_with(dest) {
+            log::warn!("Skipping path-traversal entry: {:?}", entry_path);
+            continue;
+        }
+
         if entry.header().entry_type().is_dir() {
             std::fs::create_dir_all(&out_path)?;
         } else {
