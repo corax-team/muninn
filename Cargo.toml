@@ -6,7 +6,7 @@ description = "Muninn — memory of Corax. High-performance log parsing, SIGMA d
 license = "AGPL-3.0-only"
 keywords = ["sigma", "siem", "evtx", "security", "log-parsing", "corax"]
 categories = ["parsing", "database"]
-repository = "https://github.com/corax-security/muninn"
+repository = "https://github.com/corax-team/muninn"
 
 [lib]
 name = "muninn"

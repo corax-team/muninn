@@ -57,7 +57,7 @@ chmod +x muninn
 **Windows:**
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/corax-team/muninn/releases/latest/download/muninn-windows-amd64.exe" -OutFile muninn.exe
-.\muninn.exe -e C:\Logs\ -r rules\windows\ --stats
+.\muninn.exe -e C:\Logs\ -r sigma_rules\ --stats
 ```
 
 ## Quick Start
@@ -432,7 +432,7 @@ muninn --config muninn.yaml
 | **Search engine** | SQLite-backed: keyword, field, regex, raw SQL |
 | **Single binary** | Static, no runtime dependencies |
 | **Cross-platform** | Linux x86_64, Windows x86_64 |
-| **Library + CLI** | Use as Rust crate or CLI tool |
+| **Standalone CLI** | Single binary, zero external dependencies |
 
 ### Analysis & Incident Response
 
@@ -981,44 +981,6 @@ MODE:
       --live                     Real-time monitoring (requires --features live)
 ```
 
-## Using as a Library
-
-```toml
-[dependencies]
-muninn = { git = "https://github.com/corax-team/muninn" }
-```
-
-```rust
-use std::path::Path;
-use muninn::{parse_file, SearchEngine, load_rules, compile};
-
-let result = parse_file(Path::new("events.json"))?;
-let mut engine = SearchEngine::new()?;
-engine.load_events(&result.events)?;
-
-// SIGMA detection
-let rules = load_rules(Path::new("sigma_rules/"))?;
-for rule in &rules {
-    let sql = compile(rule)?;
-    let result = engine.query_sql(&sql)?;
-    if result.count > 0 {
-        println!("[{}] {} — {} matches", rule.level, rule.title, result.count);
-    }
-}
-
-// IOC extraction
-let iocs = muninn::ioc::extract_iocs(&engine)?;
-
-// Anomaly detection
-let anomalies = muninn::anomaly::detect_anomalies(&engine)?;
-
-// Login analysis
-let logins = muninn::login::analyze_logins(&engine)?;
-
-// Search
-let hits = engine.search_keyword("mimikatz")?;
-engine.export_db(Path::new("evidence.db"))?;
-```
 
 ## Building from Source
 
@@ -1055,7 +1017,7 @@ cargo test --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 ```bash
 # Docker
 docker build -t muninn .
-docker run -v ./evidence:/data muninn /data/events.json -r /app/rules/ --stats
+docker run -v ./evidence:/case/evidence -v ./sigma_rules:/case/sigma_rules muninn -e /case/evidence/ -r /case/sigma_rules/ --stats
 
 # Cross-compile for Windows
 rustup target add x86_64-pc-windows-msvc
@@ -1085,7 +1047,7 @@ muninn -e EVTX-ATTACK-SAMPLES/ -r sigma_rules/windows/ --timeline --killchain --
 |--------|-------|
 | Parsing | ~250K events/sec (parallel, JSON Lines) |
 | SQLite load | 100K events < 5 sec |
-| Binary size | Single static binary (release, stripped, LTO) |
+| Binary size | Single static binary (release, LTO, debug info stripped) |
 | Memory | SQLite-backed, handles millions of events |
 | Parallelism | File parsing + SIGMA compile via rayon |
 
@@ -1132,7 +1094,7 @@ chmod +x muninn
 **Windows:**
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/corax-team/muninn/releases/latest/download/muninn-windows-amd64.exe" -OutFile muninn.exe
-.\muninn.exe -e C:\Logs\ -r rules\windows\ --stats
+.\muninn.exe -e C:\Logs\ -r sigma_rules\ --stats
 ```
 
 ### Быстрый старт — рекомендуемый подход
@@ -1178,7 +1140,7 @@ muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-typ
 | **Поисковый движок** | SQLite: ключевые слова, поля, регулярки, произвольный SQL |
 | **Один бинарник** | Статическая сборка, ничего не тянет за собой |
 | **Кроссплатформенный** | Linux x86_64, Windows x86_64 |
-| **Библиотека + CLI** | Rust-крейт или утилита командной строки |
+| **Standalone CLI** | Один бинарник, без внешних зависимостей |
 
 #### Аналитика и реагирование на инциденты
 
