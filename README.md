@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/corax-security/muninn/blob/main/.github/raven-logo-blue.png?raw=true" alt="Muninn" width="120">
+  <img src="https://github.com/corax-team/muninn/blob/main/.github/raven-logo-blue.png?raw=true" alt="Muninn" width="120">
 </p>
 
 <h1 align="center">Muninn</h1>
@@ -14,8 +14,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/corax-security/muninn/actions"><img src="https://github.com/corax-security/muninn/workflows/Build%20%26%20Release/badge.svg" alt="CI"></a>
-  <a href="https://github.com/corax-security/muninn/releases"><img src="https://img.shields.io/github/v/release/corax-security/muninn" alt="Release"></a>
+  <a href="https://github.com/corax-team/muninn/actions"><img src="https://github.com/corax-team/muninn/workflows/Build%20%26%20Release/badge.svg" alt="CI"></a>
+  <a href="https://github.com/corax-team/muninn/releases"><img src="https://img.shields.io/github/v/release/corax-team/muninn" alt="Release"></a>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-brightgreen" alt="Platform">
 </p>
@@ -45,18 +45,18 @@ Feed it a directory of logs — Muninn auto-detects the format, loads events int
 
 ## Download & Run
 
-Pre-built binaries: [Releases](https://github.com/corax-security/muninn/releases)
+Pre-built binaries: [Releases](https://github.com/corax-team/muninn/releases)
 
 **Linux:**
 ```bash
-curl -sL https://github.com/corax-security/muninn/releases/latest/download/muninn-linux-amd64 -o muninn
+curl -sL https://github.com/corax-team/muninn/releases/latest/download/muninn-linux-amd64 -o muninn
 chmod +x muninn
 ./muninn -e /path/to/logs/ -r sigma_rules/ --stats
 ```
 
 **Windows:**
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/corax-security/muninn/releases/latest/download/muninn-windows-amd64.exe" -OutFile muninn.exe
+Invoke-WebRequest -Uri "https://github.com/corax-team/muninn/releases/latest/download/muninn-windows-amd64.exe" -OutFile muninn.exe
 .\muninn.exe -e C:\Logs\ -r rules\windows\ --stats
 ```
 
@@ -985,20 +985,21 @@ MODE:
 
 ```toml
 [dependencies]
-muninn = { git = "https://github.com/corax-security/muninn" }
+muninn = { git = "https://github.com/corax-team/muninn" }
 ```
 
 ```rust
-use muninn::{parsers, search::SearchEngine, sigma};
+use std::path::Path;
+use muninn::{parse_file, SearchEngine, load_rules, compile};
 
-let result = parsers::parse_file("events.json")?;
+let result = parse_file(Path::new("events.json"))?;
 let mut engine = SearchEngine::new()?;
 engine.load_events(&result.events)?;
 
 // SIGMA detection
-let rules = sigma::load_rules("rules/windows/")?;
+let rules = load_rules(Path::new("sigma_rules/"))?;
 for rule in &rules {
-    let sql = sigma::compile(rule)?;
+    let sql = compile(rule)?;
     let result = engine.query_sql(&sql)?;
     if result.count > 0 {
         println!("[{}] {} — {} matches", rule.level, rule.title, result.count);
@@ -1011,9 +1012,12 @@ let iocs = muninn::ioc::extract_iocs(&engine)?;
 // Anomaly detection
 let anomalies = muninn::anomaly::detect_anomalies(&engine)?;
 
+// Login analysis
+let logins = muninn::login::analyze_logins(&engine)?;
+
 // Search
 let hits = engine.search_keyword("mimikatz")?;
-engine.export_db("evidence.db")?;
+engine.export_db(Path::new("evidence.db"))?;
 ```
 
 ## Building from Source
@@ -1116,18 +1120,18 @@ Muninn — инструмент для расследования инциден
 
 ### Установка
 
-Готовые бинарники: [Releases](https://github.com/corax-security/muninn/releases)
+Готовые бинарники: [Releases](https://github.com/corax-team/muninn/releases)
 
 **Linux:**
 ```bash
-curl -sL https://github.com/corax-security/muninn/releases/latest/download/muninn-linux-amd64 -o muninn
+curl -sL https://github.com/corax-team/muninn/releases/latest/download/muninn-linux-amd64 -o muninn
 chmod +x muninn
 ./muninn -e /path/to/logs/ -r sigma_rules/ --stats
 ```
 
 **Windows:**
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/corax-security/muninn/releases/latest/download/muninn-windows-amd64.exe" -OutFile muninn.exe
+Invoke-WebRequest -Uri "https://github.com/corax-team/muninn/releases/latest/download/muninn-windows-amd64.exe" -OutFile muninn.exe
 .\muninn.exe -e C:\Logs\ -r rules\windows\ --stats
 ```
 
