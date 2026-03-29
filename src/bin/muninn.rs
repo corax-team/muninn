@@ -2436,15 +2436,24 @@ fn main() -> Result<()> {
         // Comprehensive OpenTIP check (--opentip-check)
         #[cfg(feature = "ioc-enrich")]
         if let Some(ref opentip_key) = cli.opentip_check {
-            if !cli.quiet {
-                println!(
-                    "  {} Checking IOCs via Kaspersky OpenTIP...",
-                    "\u{25b6}".cyan()
+            let opentip_spinner = if !cli.quiet {
+                let sp = ProgressBar::new_spinner();
+                sp.set_style(
+                    ProgressStyle::default_spinner()
+                        .template("  {spinner:.green} Checking IOCs via Kaspersky OpenTIP...")
+                        .unwrap(),
                 );
-            }
+                sp.enable_steady_tick(std::time::Duration::from_millis(100));
+                Some(sp)
+            } else {
+                None
+            };
             let client = muninn::opentip::OpenTipClient::new(opentip_key);
             let opentip_results =
                 client.check_iocs(&iocs, cli.opentip_max, cli.quiet, &cli.opentip_types);
+            if let Some(sp) = opentip_spinner {
+                sp.finish_and_clear();
+            }
             if !opentip_results.is_empty() {
                 // Save reports
                 let report = muninn::opentip::render_opentip_report(&opentip_results);

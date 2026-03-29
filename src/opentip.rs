@@ -228,12 +228,7 @@ impl OpenTipClient {
             })
             .collect();
 
-        if !quiet {
-            println!(
-                "  Checking {} unique IOCs ({} parallel workers)...",
-                total, concurrency
-            );
-        }
+        // Progress output is handled by the caller (spinner in muninn.rs)
 
         // Parallel execution with bounded concurrency
         let (tx, rx) = std::sync::mpsc::channel::<Option<OpenTipResult>>();
@@ -253,7 +248,7 @@ impl OpenTipClient {
                 let api_key = api_key.clone();
                 let stopped = stopped.clone();
                 let progress = progress.clone();
-                let thread_total = total;
+                let _thread_total = total;
                 let is_quiet = quiet;
 
                 std::thread::spawn(move || {
@@ -266,10 +261,7 @@ impl OpenTipClient {
                             break;
                         }
 
-                        let n = progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        if !is_quiet {
-                            println!("  [{}/{}] Checking {}...", n, thread_total, value);
-                        }
+                        progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                         let endpoint = format!("{}/{}?request={}", BASE_URL, type_label, value);
 
