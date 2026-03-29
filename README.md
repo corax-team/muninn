@@ -26,7 +26,7 @@
 
 ## Overview
 
-Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3200+ SIGMA rules, 370+ MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
+Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3200+ SIGMA rules, 430+ MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
 
 Feed it a directory of logs — Muninn auto-detects the format, loads events into a SQLite database, and runs analysis. Save results to a persistent database with `--dbfile` and come back anytime: apply new SIGMA rules, run SQL queries, check IOCs — without re-parsing source files.
 
@@ -292,7 +292,7 @@ muninn --load-db case001.db -r sigma-rules/ --gui report.html
 
 # ── Step 4: Extract and check IOCs ─────────────────────────────────────
 
-# Extract IOCs (IPs, hashes, domains, URLs, file paths, registry keys, services)
+# Extract IOCs (IPs, domains, URLs, hashes, emails, file paths, registry keys, services, tasks, pipes)
 muninn --load-db case001.db --ioc-extract
 
 # Check extracted IOCs against Kaspersky OpenTIP
@@ -442,7 +442,7 @@ muninn --config muninn.yaml
 | **ATT&CK Navigator** | `--navigator layer.json` | Export layer for ATT&CK Navigator |
 | **Kill chain view** | `--killchain [FILE]` | ASCII kill chain visualization by tactic |
 | **Attack timeline** | `--timeline [FILE]` | Chronological attack timeline |
-| **Anomaly detection** | `--anomalies [FILE]` | Rare processes, off-hours logons, unusual parent-child |
+| **Anomaly detection** | `--anomalies [FILE]` | Rare processes, off-hours logons, unusual parent-child, brute force detection, command obfuscation scoring |
 | **IOC extraction** | `--ioc-extract [FILE]` | Extract IPs, domains, URLs, hashes, emails, file paths, registry keys, services, tasks, pipes |
 | **IOC enrichment** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP (basic enrichment) |
 | **OpenTIP deep check** | `--opentip-check <KEY>` | Comprehensive Kaspersky OpenTIP analysis with full report (TXT + HTML + JSON), parallel requests |
@@ -497,7 +497,7 @@ muninn --config muninn.yaml
 
 | Feature | Flag | Description |
 |---------|------|-------------|
-| **Archive support** | `--features archive` | Parse .gz/.zip/.bz2/.tar.gz files |
+| **Archive support** | `--features archive` | Parse .gz/.zip/.bz2/.tar.gz/.tgz/.rar/.7z files |
 | **Interactive TUI** | `--features tui` | Terminal UI with detection browser |
 | **Live monitoring** | `--features live` | Watch directory for new events in real-time |
 | **Rule download** | `--features download` | Download SIGMA rules from SigmaHQ releases |
@@ -858,14 +858,16 @@ muninn --download-rules all --rules-dir ./my-rules/  # custom output directory
 
 | Category | Rules |
 |----------|-------|
-| Windows | 2384 |
-| Cloud (AWS, Azure, GCP, M365) | 226 |
-| Linux | 207 |
-| Application | 92 |
-| macOS | 69 |
-| Network | 52 |
-| Web | 45 |
-| Identity | 24 |
+| Windows | 2253 |
+| Cloud (AWS, Azure, GCP, M365) | 204 |
+| Linux | 147 |
+| Application | 96 |
+| macOS | 48 |
+| Network | 45 |
+| Web | 42 |
+| Identity | 20 |
+| Category (Antivirus) | 7 |
+| Emerging Threats / CVE | 411 |
 
 ```bash
 muninn -e events.json -r sigma-rules/                            # all rules
@@ -927,7 +929,7 @@ ANALYSIS (all support optional FILE path — .txt default, .html/.json by extens
       --timeline [FILE]          Show attack timeline and save to file
       --killchain [FILE]         Kill chain visualization and save to file
       --anomalies [FILE]         Detect statistical anomalies and save to file
-      --ioc-extract [FILE]       Extract IOCs (IPs, hashes, URLs, file paths, registry, services, pipes)
+      --ioc-extract [FILE]       Extract IOCs (IPs, domains, URLs, hashes, emails, file paths, registry keys, services, tasks, pipes)
       --ioc-max <N>              Max unique IOCs to track (default: 100000)
       --login-analysis [FILE]    Analyze login events (4624/4625/4672): brute force, lateral movement
       --summary [FILE]           Executive incident assessment with automated verdict
@@ -941,7 +943,7 @@ IOC ENRICHMENT (requires --features ioc-enrich):
       --opentip-key <KEY>        Kaspersky OpenTIP API key (basic)
       --opentip-check <KEY>      Kaspersky OpenTIP deep check (TXT + HTML + JSON reports)
       --opentip-types <TYPES>    IOC types to check: hash,ip,domain,url (default: all)
-      --opentip-max <N>          Max IOCs to check (default: 200, daily quota: 2000)
+      --opentip-max <N>          Max IOCs to check (default: 2000, daily quota: 2000)
 
 EXPORT:
       --navigator [FILE]         ATT&CK Navigator layer JSON (auto-named if no path given)
@@ -1034,7 +1036,7 @@ cargo test --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 |---------|-------------|
 | `all-parsers` | All format parsers (default) |
 | `cli` | CLI binary |
-| `archive` | .gz/.zip/.bz2/.tar.gz support (flate2, zip, bzip2, tar) |
+| `archive` | .gz/.zip/.bz2/.tar.gz/.tgz/.rar/.7z support (flate2, zip, bzip2, tar, unrar, sevenz-rust) |
 | `download` | Download SIGMA rules from SigmaHQ releases (ureq, zip) |
 | `ioc-enrich` | IOC enrichment via VirusTotal, AbuseIPDB, OpenTIP (ureq) |
 | `tui` | Interactive terminal UI (ratatui, crossterm) |
@@ -1087,7 +1089,7 @@ muninn -e EVTX-ATTACK-SAMPLES/ -r sigma_rules/windows/ --timeline --killchain --
 
 **AGPL-3.0** — see [LICENSE](LICENSE).
 
-SIGMA rules in `rules/` licensed under [DRL 1.1](https://github.com/SigmaHQ/Detection-Rule-License) by SigmaHQ.
+SIGMA rules in `sigma_rules/` licensed under [DRL 1.1](https://github.com/SigmaHQ/Detection-Rule-License) by SigmaHQ.
 
 ---
 
@@ -1095,7 +1097,7 @@ SIGMA rules in `rules/` licensed under [DRL 1.1](https://github.com/SigmaHQ/Dete
 
 ## Обзор
 
-Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3200+ SIGMA-правил, 370+ техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
+Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3200+ SIGMA-правил, 430+ техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
 
 Укажите директорию с логами — Muninn сам определит формат, загрузит события в SQLite и выполнит анализ. Результаты можно сохранить в базу и возвращаться к ним сколько угодно: прогонять новые SIGMA-правила, делать SQL-запросы, проверять индикаторы — без повторного парсинга.
 
@@ -1182,7 +1184,7 @@ muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-typ
 | **ATT&CK Navigator** | `--navigator layer.json` | Экспорт слоя для ATT&CK Navigator |
 | **Kill chain** | `--killchain [FILE]` | ASCII-визуализация по тактикам |
 | **Таймлайн атаки** | `--timeline [FILE]` | Хронология детектов |
-| **Детекция аномалий** | `--anomalies [FILE]` | Редкие процессы, нетипичное время логона, подозрительные parent→child |
+| **Детекция аномалий** | `--anomalies [FILE]` | Редкие процессы, нетипичное время логона, подозрительные parent→child, обнаружение брутфорса, оценка обфускации команд |
 | **Извлечение IOC** | `--ioc-extract [FILE]` | IP, домены, URL, хэши, email, пути, реестр, службы, задачи, пайпы |
 | **Обогащение IOC** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP |
 | **Глубокая проверка OpenTIP** | `--opentip-check <KEY>` | Полный анализ через Kaspersky OpenTIP: отчёты TXT/HTML/JSON, параллельные запросы |
@@ -1258,4 +1260,4 @@ cargo test --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 
 **AGPL-3.0** — см. [LICENSE](LICENSE).
 
-SIGMA-правила в `rules/` — [DRL 1.1](https://github.com/SigmaHQ/Detection-Rule-License) от SigmaHQ.
+SIGMA-правила в `sigma_rules/` — [DRL 1.1](https://github.com/SigmaHQ/Detection-Rule-License) от SigmaHQ.
