@@ -366,6 +366,19 @@ fn level_color(level: &str) -> colored::ColoredString {
     }
 }
 
+/// Read available memory from /proc/meminfo (Linux only).
+/// Returns available bytes, or None on non-Linux / parse failure.
+fn available_memory_bytes() -> Option<u64> {
+    let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in contents.lines() {
+        if line.starts_with("MemAvailable:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            return parts.get(1)?.parse::<u64>().ok().map(|kb| kb * 1024);
+        }
+    }
+    None
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Error)
@@ -962,12 +975,24 @@ fn main() -> Result<()> {
             None
         };
 
-        // Configure thread pool: default to half of available cores (min 1, max 4)
+        // Configure thread pool: default to half of available cores (min 1, max 4),
+        // further constrained by available memory to prevent OOM kills
         let workers = cli.workers.unwrap_or_else(|| {
             let cpus = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(2);
-            (cpus / 2).clamp(1, 4)
+            let cpu_workers = (cpus / 2).clamp(1, 4);
+
+            // Memory-aware scaling: ~300 MB per worker (lightweight cache + events + batch + IOC)
+            if let Some(avail) = available_memory_bytes() {
+                let per_worker: u64 = 300 * 1024 * 1024;
+                let reserved: u64 = 512 * 1024 * 1024;
+                let usable = avail.saturating_sub(reserved);
+                let mem_workers = (usable / per_worker) as usize;
+                cpu_workers.min(mem_workers.clamp(1, 4))
+            } else {
+                cpu_workers
+            }
         });
         rayon::ThreadPoolBuilder::new()
             .num_threads(workers)
@@ -978,7 +1003,7 @@ fn main() -> Result<()> {
         let max_events = cli.max_events;
 
         // Use on-disk SQLite when --dbfile is specified (no RAM limit)
-        let mut engine = if let Some(ref dbpath) = cli.dbfile {
+        let engine = if let Some(ref dbpath) = cli.dbfile {
             if !cli.quiet {
                 println!(
                     "  {} Writing directly to {:?} (disk-backed, no RAM limit)",
@@ -986,7 +1011,9 @@ fn main() -> Result<()> {
                     dbpath
                 );
             }
-            SearchEngine::new_on_disk(dbpath)?
+            let eng = SearchEngine::new_on_disk(dbpath)?;
+            eng.set_bulk_load_mode()?;
+            eng
         } else {
             SearchEngine::new()?
         };
@@ -1032,6 +1059,12 @@ fn main() -> Result<()> {
             Option<muninn::ioc::IocCollector>,
         );
 
+        // Wrap engine in Mutex so parallel workers can load events directly
+        // when --dbfile is used (avoids re-parsing files in unified load)
+        let engine_mutex = std::sync::Mutex::new(engine);
+        let engine_mutex_ref = &engine_mutex;
+        let load_main_during_streaming = cli.dbfile.is_some() && needs_unified_engine;
+
         let file_results: Vec<FileResult> = files
             .par_iter()
             .enumerate()
@@ -1055,7 +1088,7 @@ fn main() -> Result<()> {
                     .map(|f| f.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
-                // Helper: process a batch of events (transforms, hashes, filter, stats)
+                // Helper: process a batch of events (transforms, hashes, stats — no filtering)
                 let process_batch = |batch: &mut Vec<muninn::model::Event>| {
                     if let Some(ref fmap) = field_map {
                         for ev in batch.iter_mut() {
@@ -1072,9 +1105,6 @@ fn main() -> Result<()> {
                         for ev in batch.iter_mut() {
                             ev.compute_hash();
                         }
-                    }
-                    if let Some(ref filter) = event_filter {
-                        batch.retain(|ev| filter.matches(ev));
                     }
                     if do_stats {
                         let mut local_counts: HashMap<String, usize> = HashMap::new();
@@ -1093,17 +1123,16 @@ fn main() -> Result<()> {
                     }
                 };
 
-                // Create per-file SIGMA engine if rules are provided
-                let mut file_engine = if compiled_rules.is_some() {
-                    match SearchEngine::new() {
-                        Ok(e) => Some(e),
-                        Err(_) => {
-                            if let Some(ref bar) = pb_ref {
-                                bar.inc(file_size);
-                            }
-                            return (file.clone(), 0, Some(format_name), Vec::new(), None, None);
-                        }
-                    }
+                // Lazy per-file SIGMA engine: created on first batch that passes filter.
+                // Large files (>100 MB) use disk-backed temp engine to avoid OOM.
+                let mut file_engine: Option<SearchEngine> = None;
+                let has_sigma = compiled_rules.is_some();
+                let use_disk_engine = file_size > 100 * 1024 * 1024;
+                let temp_db_path = if use_disk_engine && has_sigma {
+                    Some(std::env::temp_dir().join(format!(
+                        "muninn_sigma_{}.db",
+                        std::process::id() ^ (file_idx as u32)
+                    )))
                 } else {
                     None
                 };
@@ -1154,8 +1183,31 @@ fn main() -> Result<()> {
                             }
                             event_count += batch.len();
                             atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
-                            if let Some(ref mut eng) = file_engine {
-                                let _ = eng.load_events(&batch);
+                            // Load ALL events into main engine before filtering
+                            if load_main_during_streaming {
+                                if let Ok(mut eng) = engine_mutex_ref.lock() {
+                                    let _ = eng.load_events(&batch);
+                                    // Periodic WAL checkpoint to bound memory
+                                    if eng.event_count() % 100_000 < batch_size {
+                                        eng.checkpoint_wal();
+                                    }
+                                }
+                            }
+                            // Apply early filter for SIGMA (reduces batch for file_engine only)
+                            if let Some(ref filter) = event_filter {
+                                batch.retain(|ev| filter.matches(ev));
+                            }
+                            if !batch.is_empty() {
+                                if has_sigma && file_engine.is_none() {
+                                    file_engine = if let Some(ref p) = temp_db_path {
+                                        SearchEngine::new_temp_disk(p).ok()
+                                    } else {
+                                        SearchEngine::new_lightweight().ok()
+                                    };
+                                }
+                                if let Some(ref mut eng) = file_engine {
+                                    let _ = eng.load_events(&batch);
+                                }
                             }
                             // Incremental progress: estimate bytes from raw sizes
                             if let Some(ref bar) = pb_ref {
@@ -1176,8 +1228,21 @@ fn main() -> Result<()> {
                         }
                         event_count += batch.len();
                         atomic_total_events.fetch_add(batch.len(), Ordering::Relaxed);
-                        if let Some(ref mut eng) = file_engine {
-                            let _ = eng.load_events(&batch);
+                        if load_main_during_streaming {
+                            if let Ok(mut eng) = engine_mutex_ref.lock() {
+                                let _ = eng.load_events(&batch);
+                            }
+                        }
+                        if let Some(ref filter) = event_filter {
+                            batch.retain(|ev| filter.matches(ev));
+                        }
+                        if !batch.is_empty() {
+                            if has_sigma && file_engine.is_none() {
+                                file_engine = SearchEngine::new_lightweight().ok();
+                            }
+                            if let Some(ref mut eng) = file_engine {
+                                let _ = eng.load_events(&batch);
+                            }
                         }
                     }
                     // Correct to exact file size
@@ -1221,8 +1286,23 @@ fn main() -> Result<()> {
                     event_count = pr.events.len();
                     atomic_total_events.fetch_add(event_count, Ordering::Relaxed);
 
-                    if let Some(ref mut eng) = file_engine {
-                        let _ = eng.load_events(&pr.events);
+                    // Load ALL events into main engine before filtering
+                    if load_main_during_streaming {
+                        if let Ok(mut eng) = engine_mutex_ref.lock() {
+                            let _ = eng.load_events(&pr.events);
+                        }
+                    }
+                    // Apply early filter for SIGMA
+                    if let Some(ref filter) = event_filter {
+                        pr.events.retain(|ev| filter.matches(ev));
+                    }
+                    if !pr.events.is_empty() {
+                        if has_sigma && file_engine.is_none() {
+                            file_engine = SearchEngine::new_lightweight().ok();
+                        }
+                        if let Some(ref mut eng) = file_engine {
+                            let _ = eng.load_events(&pr.events);
+                        }
                     }
                     drop(pr);
                 }
@@ -1257,6 +1337,12 @@ fn main() -> Result<()> {
                     Vec::new()
                 };
 
+                // Drop per-file engine and clean up temp disk file
+                drop(file_engine);
+                if let Some(ref p) = temp_db_path {
+                    let _ = std::fs::remove_file(p);
+                }
+
                 // Non-EVTX: report full file size at once (EVTX already reported incrementally)
                 if !is_evtx {
                     if let Some(ref bar) = pb_ref {
@@ -1274,6 +1360,14 @@ fn main() -> Result<()> {
                 )
             })
             .collect();
+
+        // Unwrap engine from Mutex after parallel processing
+        let mut engine = engine_mutex.into_inner().unwrap();
+
+        // Switch disk-backed engine from bulk load to query mode
+        if cli.dbfile.is_some() {
+            let _ = engine.set_query_mode();
+        }
 
         // Aggregate results from streaming pipeline
         for (_file, count, fmt, _, err, _) in &file_results {
@@ -1345,7 +1439,7 @@ fn main() -> Result<()> {
         }
 
         // Load unified engine only if features require it (sequential, after streaming)
-        // Skip if engine is already on-disk (--dbfile) — events were written during streaming
+        // When --dbfile is used, events were already loaded via Mutex during streaming
         let skip_unified_load = cli.dbfile.is_some();
         if needs_unified_engine && !skip_unified_load {
             let load_pb = if !cli.quiet && total_size_bytes > 0 {
@@ -1585,8 +1679,17 @@ fn main() -> Result<()> {
     }
 
     if cli.stats {
-        // Stats computed during streaming pipeline
+        // Stats computed during streaming pipeline; fall back to engine query for --load-db
         let fc = field_counts.into_inner().unwrap_or_default();
+        let fc = if fc.is_empty() {
+            // --load-db path: field_counts wasn't populated, query the engine
+            engine
+                .stats()
+                .map(|s| s.populated_fields)
+                .unwrap_or_default()
+        } else {
+            fc
+        };
         println!("\n  {:<40} {}", "Field".bold(), "Count".bold());
         println!("  {}", "─".repeat(52));
         let mut fields: Vec<_> = fc.iter().collect();

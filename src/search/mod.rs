@@ -73,6 +73,56 @@ impl SearchEngine {
         })
     }
 
+    /// Create a lightweight in-memory engine for temporary per-file SIGMA evaluation.
+    /// Uses minimal cache (16 MB) since events are loaded, queried, then discarded.
+    pub fn new_lightweight() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -16384;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA mmap_size = 0;
+             PRAGMA page_size = 4096;
+             PRAGMA locking_mode = EXCLUSIVE;",
+        )?;
+
+        register_regexp(&conn)?;
+
+        Ok(SearchEngine {
+            conn,
+            columns: Vec::new(),
+            event_count: 0,
+        })
+    }
+
+    /// Create a disk-backed temporary engine for per-file SIGMA evaluation of large files.
+    /// Data goes to disk instead of RAM, keeping RSS low. The caller should delete the
+    /// temp file after dropping the engine.
+    pub fn new_temp_disk(path: &Path) -> Result<Self> {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -16384;
+             PRAGMA temp_store = FILE;
+             PRAGMA mmap_size = 0;
+             PRAGMA page_size = 4096;
+             PRAGMA locking_mode = EXCLUSIVE;",
+        )?;
+
+        register_regexp(&conn)?;
+
+        Ok(SearchEngine {
+            conn,
+            columns: Vec::new(),
+            event_count: 0,
+        })
+    }
+
     /// Create a new engine backed by an on-disk SQLite file.
     /// Events are written directly to disk — no RAM limit.
     pub fn new_on_disk(path: &Path) -> Result<Self> {
@@ -612,6 +662,34 @@ impl SearchEngine {
         }
 
         Ok(count)
+    }
+
+    /// Switch to bulk load mode: minimal cache, no mmap, no fsync.
+    /// Use before streaming large amounts of data into an on-disk engine.
+    pub fn set_bulk_load_mode(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "PRAGMA cache_size = -32768;
+             PRAGMA mmap_size = 0;
+             PRAGMA synchronous = OFF;",
+        )?;
+        Ok(())
+    }
+
+    /// Switch to query mode: full cache and mmap for fast reads.
+    /// Call after bulk loading is complete.
+    pub fn set_query_mode(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "PRAGMA cache_size = -262144;
+             PRAGMA mmap_size = 536870912;
+             PRAGMA synchronous = NORMAL;",
+        )?;
+        self.checkpoint_wal();
+        Ok(())
+    }
+
+    /// Run a passive WAL checkpoint to consolidate writes and free memory.
+    pub fn checkpoint_wal(&self) {
+        let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)");
     }
 
     pub fn export_db(&self, path: &Path) -> Result<()> {

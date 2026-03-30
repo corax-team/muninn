@@ -221,3 +221,45 @@ fn test_run_queries_batch() {
     assert!(results.iter().any(|(l, _)| l == "whoami_detect"));
     assert!(results.iter().any(|(l, _)| l == "logon_detect"));
 }
+
+#[test]
+fn test_lightweight_engine_equivalent_queries() {
+    // Lightweight engine must produce identical results to full engine
+    let events: Vec<Event> = (0..10_000)
+        .map(|i| {
+            make_event(&[
+                ("EventID", &format!("{}", i % 10)),
+                ("Image", if i % 3 == 0 { "cmd.exe" } else { "svchost.exe" }),
+                ("CommandLine", &format!("task_{}", i)),
+            ])
+        })
+        .collect();
+
+    let mut full = SearchEngine::new().unwrap();
+    full.load_events(&events).unwrap();
+    full.create_indexes().unwrap();
+
+    let mut light = SearchEngine::new_lightweight().unwrap();
+    light.load_events(&events).unwrap();
+    light.create_indexes().unwrap();
+
+    // Same event count
+    assert_eq!(full.event_count(), light.event_count());
+
+    // Same SQL query results
+    let sql = "SELECT * FROM events WHERE \"EventID\" = '5'";
+    let r_full = full.query_sql(sql).unwrap();
+    let r_light = light.query_sql(sql).unwrap();
+    assert_eq!(r_full.count, r_light.count);
+    assert_eq!(r_full.count, 1000);
+
+    // Same field search
+    let r_full = full.search_field("Image", "cmd.exe").unwrap();
+    let r_light = light.search_field("Image", "cmd.exe").unwrap();
+    assert_eq!(r_full.count, r_light.count);
+
+    // Same regex search
+    let r_full = full.search_regex("CommandLine", r"task_4\d$").unwrap();
+    let r_light = light.search_regex("CommandLine", r"task_4\d$").unwrap();
+    assert_eq!(r_full.count, r_light.count);
+}

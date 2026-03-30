@@ -262,7 +262,7 @@ muninn -e ./evidence-before/ -r sigma-rules/ --diff ./evidence-after/
 <details>
 <summary><b>Persistent database — parse once, query many times</b></summary>
 
-Parsing 4 GB of EVTX logs takes ~8 minutes. Save the result to a SQLite database once — then run any analysis instantly, without re-parsing.
+Parsing 4 GB of EVTX logs takes ~8 minutes. Save the result to a SQLite database once — then run any analysis instantly, without re-parsing. Memory-adaptive: automatically adjusts parallelism and uses disk-backed engines for large files to prevent OOM on memory-constrained systems.
 
 ```bash
 # ── Step 1: Parse logs and save to database (one-time) ──────────────────
