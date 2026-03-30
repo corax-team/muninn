@@ -305,6 +305,31 @@ struct Cli {
         help = "Events per batch for loading (default: 50000)"
     )]
     batch_size: Option<usize>,
+
+    // --- Hunt mode ---
+    #[arg(
+        long = "hunt",
+        help = "Universal hunt mode: enable all transforms, SIGMA rules, anomaly detection, \
+                IOC extraction, login analysis, timeline, correlation, kill chain, threat scoring, \
+                and executive summary. One flag to find all traces of compromise."
+    )]
+    hunt: bool,
+
+    #[arg(
+        long = "hunt-fast",
+        help = "Fast hunt mode: skip expensive transforms (Levenshtein typosquatting). \
+                Suitable for datasets with 1M+ events.",
+        conflicts_with = "hunt"
+    )]
+    hunt_fast: bool,
+
+    #[arg(
+        long = "hunt-categories",
+        help = "Restrict hunt transforms to specific categories (comma-separated): \
+                commandline,image,parent,registry,file,tactic,dns,all",
+        value_delimiter = ','
+    )]
+    hunt_categories: Vec<String>,
 }
 
 struct Detection {
@@ -511,6 +536,42 @@ fn main() -> Result<()> {
         }
         if cli.killchain.is_none() && cfg.killchain.unwrap_or(false) {
             cli.killchain = Some(PathBuf::from("auto"));
+        }
+    }
+
+    // Hunt mode expansion: --hunt / --hunt-fast enables all analysis modules
+    let is_hunt = cli.hunt || cli.hunt_fast;
+    if is_hunt {
+        cli.transforms = true;
+        if cli.rules.is_none() {
+            let default_rules = PathBuf::from("sigma_rules");
+            if default_rules.is_dir() {
+                cli.rules = Some(default_rules);
+            }
+        }
+        if cli.anomalies.is_none() {
+            cli.anomalies = Some(PathBuf::from("auto"));
+        }
+        if cli.ioc_extract.is_none() {
+            cli.ioc_extract = Some(PathBuf::from("auto"));
+        }
+        if cli.login_analysis.is_none() {
+            cli.login_analysis = Some(PathBuf::from("auto"));
+        }
+        if cli.timeline.is_none() {
+            cli.timeline = Some(PathBuf::from("auto"));
+        }
+        if cli.correlate.is_none() {
+            cli.correlate = Some(PathBuf::from("auto"));
+        }
+        if cli.killchain.is_none() {
+            cli.killchain = Some(PathBuf::from("auto"));
+        }
+        if cli.threat_score.is_none() {
+            cli.threat_score = Some(PathBuf::from("auto"));
+        }
+        if cli.summary.is_none() {
+            cli.summary = Some(PathBuf::from("auto"));
         }
     }
 
@@ -1100,6 +1161,24 @@ fn main() -> Result<()> {
                             batch,
                             &muninn::transforms::default_transforms(),
                         );
+                    }
+                    if is_hunt {
+                        let hunt_cats: Option<Vec<muninn::hunt::HuntCategory>> =
+                            if cli.hunt_categories.is_empty()
+                                || cli.hunt_categories.iter().any(|c| c == "all")
+                            {
+                                None
+                            } else {
+                                Some(
+                                    cli.hunt_categories
+                                        .iter()
+                                        .filter_map(|c| muninn::hunt::HuntCategory::parse(c))
+                                        .collect(),
+                                )
+                            };
+                        let hunt_tfs =
+                            muninn::hunt::hunt_transforms(hunt_cats.as_deref(), cli.hunt_fast);
+                        muninn::transforms::apply_transforms(batch, &hunt_tfs);
                     }
                     if do_hashes {
                         for ev in batch.iter_mut() {
@@ -2358,6 +2437,28 @@ fn main() -> Result<()> {
         save_report(anom_path, "Anomaly Detection", &output, &anomalies)?;
         if !cli.quiet {
             println!("  {} Anomalies → {:?}", "✓".green(), anom_path);
+        }
+    }
+
+    // Hunt Findings (collect from SQLite after all transforms applied)
+    if is_hunt {
+        match muninn::hunt::collect_hunt_findings(&engine) {
+            Ok(findings) if !findings.is_empty() => {
+                let output = muninn::hunt::render_hunt_findings(&findings);
+                if !cli.quiet {
+                    print!("{}", output);
+                }
+            }
+            Ok(_) => {
+                if !cli.quiet {
+                    println!("  {} No hunt findings detected.", "✓".green());
+                }
+            }
+            Err(e) => {
+                if !cli.quiet {
+                    eprintln!("  {} Hunt findings error: {}", "✗".red(), e);
+                }
+            }
         }
     }
 

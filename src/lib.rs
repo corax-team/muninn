@@ -6,6 +6,7 @@ pub mod sigma;
 pub mod anomaly;
 pub mod correlate;
 pub mod diff;
+pub mod hunt;
 pub mod ioc;
 pub mod login;
 pub mod mitre;
