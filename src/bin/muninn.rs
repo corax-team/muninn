@@ -71,7 +71,7 @@ struct Config {
     about = "Muninn — memory of Corax. Universal log parser, SIGMA detection engine, and search tool. 15+ formats, one binary, zero dependencies."
 )]
 struct Cli {
-    #[arg(short = 'e', long = "events", required_unless_present = "load_db")]
+    #[arg(short = 'e', long = "events", required_unless_present_any = ["load_db", "download_rules"])]
     events: Option<PathBuf>,
 
     #[arg(short = 'r', long = "rules")]
@@ -268,7 +268,7 @@ struct Cli {
     #[cfg(feature = "download")]
     #[arg(
         long = "download-rules",
-        help = "Download SIGMA rules: core, core+, all, emerging"
+        help = "Download SIGMA rules: muninn (default), core, core+, all, emerging"
     )]
     download_rules: Option<String>,
 
@@ -2265,46 +2265,8 @@ fn main() -> Result<()> {
         // Mini-GUI HTML report
         if let Some(ref gui_path) = cli.gui {
             let total_matches: usize = results.iter().map(|d| d.result.count).sum();
-            const GUI_EVENT_LIMIT: usize = 50;
-            const GUI_VALUE_MAX: usize = 500;
-            const GUI_FIELDS: &[&str] = &[
-                "SystemTime",
-                "timestamp",
-                "@timestamp",
-                "TimeCreated",
-                "UtcTime",
-                "EventTime",
-                "date",
-                "_time",
-                "time",
-                "datetime",
-                "EventID",
-                "Channel",
-                "Computer",
-                "User",
-                "LogonType",
-                "Image",
-                "ParentImage",
-                "CommandLine",
-                "ParentCommandLine",
-                "ProcessId",
-                "ParentProcessId",
-                "TargetObject",
-                "TargetFilename",
-                "SourceIp",
-                "DestinationIp",
-                "SourcePort",
-                "DestinationPort",
-                "ServiceName",
-                "ServiceFileName",
-                "hostname",
-                "app_name",
-                "message",
-                "level",
-                "src_ip",
-                "dst_ip",
-                "_source_file",
-            ];
+            const GUI_EVENT_LIMIT: usize = 200;
+            const GUI_VALUE_MAX: usize = 1000;
             let gui_data: Vec<_> = results
                 .iter()
                 .map(|d| {
@@ -2315,8 +2277,16 @@ fn main() -> Result<()> {
                         .take(GUI_EVENT_LIMIT)
                         .map(|row| {
                             row.iter()
-                                .filter(|(k, _)| {
-                                    GUI_FIELDS.iter().any(|f| f.eq_ignore_ascii_case(k))
+                                .filter(|(k, v)| {
+                                    // Include all non-empty fields except XML metadata noise
+                                    !v.is_empty()
+                                        && !k.starts_with('#')
+                                        && !k.starts_with("xmlns")
+                                        && !k.starts_with("Provider_#")
+                                        && !k.starts_with("Execution_#")
+                                        && !k.starts_with("Security_#")
+                                        && !k.starts_with("TimeCreated_#")
+                                        && !k.starts_with("EventID_#")
                                 })
                                 .map(|(k, v)| {
                                     let truncated = if v.len() > GUI_VALUE_MAX {
@@ -2350,6 +2320,8 @@ fn main() -> Result<()> {
                 "total_events": total_events,
                 "rules_matched": results.len(),
                 "total_detections": total_matches,
+                "workers": workers,
+                "duration_sec": format!("{:.1}", start.elapsed().as_secs_f64()),
             });
             let html = muninn::output::gui::generate_html_report(&gui_data, &summary)?;
             std::fs::write(gui_path, &html)?;

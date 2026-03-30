@@ -94,6 +94,9 @@ jobs:
         with:
           path: artifacts
 
+      - name: Package SIGMA rules
+        run: cd sigma_rules && zip -r ../sigma_rules.zip . && cd ..
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -103,3 +106,4 @@ jobs:
             artifacts/muninn-linux-amd64/muninn-${{ github.ref_name }}-linux-amd64
             artifacts/muninn-windows-amd64/muninn-windows-amd64.exe
             artifacts/muninn-windows-amd64/muninn-${{ github.ref_name }}-windows-amd64.exe
+            sigma_rules.zip

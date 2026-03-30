@@ -2,6 +2,10 @@ use anyhow::{bail, Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+// Muninn bundled rules from corax-team repository (includes SigmaHQ + custom APT rules)
+const MUNINN_RULES_URL: &str =
+    "https://github.com/corax-team/muninn/releases/latest/download/sigma_rules.zip";
+// SigmaHQ upstream rulesets (fallback / specific subsets)
 const SIGMA_CORE_URL: &str =
     "https://github.com/SigmaHQ/sigma/releases/latest/download/sigma_core.zip";
 const SIGMA_CORE_PLUS_URL: &str =
@@ -13,6 +17,7 @@ const SIGMA_EMERGING_URL: &str =
 
 #[derive(Debug, Clone, Copy)]
 pub enum RuleSet {
+    Muninn,
     Core,
     CorePlus,
     All,
@@ -22,12 +27,13 @@ pub enum RuleSet {
 impl RuleSet {
     pub fn from_name(name: &str) -> Result<Self> {
         match name.to_lowercase().as_str() {
+            "muninn" | "default" => Ok(RuleSet::Muninn),
             "core" => Ok(RuleSet::Core),
             "core+" | "coreplus" | "core-plus" => Ok(RuleSet::CorePlus),
             "all" => Ok(RuleSet::All),
             "emerging" | "emerging-threats" => Ok(RuleSet::Emerging),
             _ => bail!(
-                "Unknown ruleset: '{}'. Available: core, core+, all, emerging",
+                "Unknown ruleset: '{}'. Available: muninn (default), core, core+, all, emerging",
                 name
             ),
         }
@@ -35,6 +41,7 @@ impl RuleSet {
 
     pub fn url(&self) -> &'static str {
         match self {
+            RuleSet::Muninn => MUNINN_RULES_URL,
             RuleSet::Core => SIGMA_CORE_URL,
             RuleSet::CorePlus => SIGMA_CORE_PLUS_URL,
             RuleSet::All => SIGMA_ALL_URL,
@@ -44,6 +51,7 @@ impl RuleSet {
 
     pub fn display_name(&self) -> &'static str {
         match self {
+            RuleSet::Muninn => "Muninn Rules (SigmaHQ + APT)",
             RuleSet::Core => "SigmaHQ Core",
             RuleSet::CorePlus => "SigmaHQ Core+",
             RuleSet::All => "SigmaHQ All Rules",
@@ -143,6 +151,8 @@ mod tests {
 
     #[test]
     fn test_ruleset_from_name() {
+        assert!(matches!(RuleSet::from_name("muninn"), Ok(RuleSet::Muninn)));
+        assert!(matches!(RuleSet::from_name("default"), Ok(RuleSet::Muninn)));
         assert!(matches!(RuleSet::from_name("core"), Ok(RuleSet::Core)));
         assert!(matches!(RuleSet::from_name("all"), Ok(RuleSet::All)));
         assert!(matches!(RuleSet::from_name("core+"), Ok(RuleSet::CorePlus)));
