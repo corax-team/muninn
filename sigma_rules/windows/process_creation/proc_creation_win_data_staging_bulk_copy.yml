@@ -1,0 +1,61 @@
+title: Data Staging — Bulk File Copy to Temporary Directory
+id: 3848b13e-dd4c-43c2-9e0a-fb4c082c2fad
+status: stable
+description: |
+    Detects bulk file copy or robocopy operations targeting temporary or
+    user-writable directories for data staging before exfiltration.
+    Attackers stage data by copying sensitive files to a single directory
+    before archiving and exfiltrating. This is a key pre-exfiltration indicator.
+references:
+    - https://thedfirreport.com/2024/04/29/from-icedid-to-dagon-locker-ransomware-in-29-days/
+    - https://attack.mitre.org/techniques/T1074/001/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.collection
+    - attack.t1074.001
+    - attack.t1005
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_robocopy:
+        Image|endswith: '\robocopy.exe'
+        CommandLine|contains:
+            - '/e '
+            - '/mir '
+            - '/s '
+    selection_xcopy:
+        Image|endswith: '\xcopy.exe'
+        CommandLine|contains:
+            - '/s'
+            - '/e'
+    selection_copy:
+        Image|endswith:
+            - '\cmd.exe'
+        CommandLine|contains:
+            - 'copy '
+            - 'xcopy '
+    selection_target_staging:
+        CommandLine|contains:
+            - '\Users\Public\'
+            - '\ProgramData\'
+            - '\AppData\Local\Temp\'
+            - '\Windows\Temp\'
+            - 'C:\Temp\'
+            - 'C:\Perflogs\'
+    selection_source_sensitive:
+        CommandLine|contains:
+            - '\Documents'
+            - '\Desktop'
+            - '\Shares'
+            - '\Finance'
+            - '\HR'
+            - '\Backup'
+            - '\\\\'
+            - '\$'
+    condition: (selection_robocopy or selection_xcopy or selection_copy) and selection_target_staging and selection_source_sensitive
+falsepositives:
+    - Legitimate backup scripts copying files to staging directories
+    - Data migration activities
+level: high

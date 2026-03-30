@@ -1,0 +1,58 @@
+title: LNK File Execution from Suspicious Location with Encoded Payload
+id: f1f650b1-1253-49cb-9119-e210f5f53ac2
+status: stable
+description: |
+    Detects execution of commands via shortcut (LNK) files from temporary,
+    download, or archive-extracted locations. Attackers deliver malicious LNK
+    files via phishing that invoke PowerShell, cmd, or scripting engines with
+    encoded or obfuscated payloads. This is a primary initial access vector
+    for Qakbot, IcedID, Emotet, and BazarLoader campaigns.
+references:
+    - https://www.trendmicro.com/en_us/research/22/j/lnk-files-are-used-to-spread-malware.html
+    - https://attack.mitre.org/techniques/T1204/001/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.initial-access
+    - attack.t1204.001
+    - attack.execution
+    - attack.t1059.001
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_scripting_engine:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\cmd.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\forfiles.exe'
+    selection_from_suspicious_path:
+        CommandLine|contains:
+            - '\AppData\Local\Temp\'
+            - '\Users\Public\'
+            - '\Downloads\'
+            - '\Desktop\'
+            - '\INetCache\'
+    selection_lnk_indicators:
+        CommandLine|contains:
+            - '.lnk'
+            - '/e:vbscript'
+            - '/e:jscript'
+            - 'FromBase64String'
+            - '-enc '
+            - '-EncodedCommand'
+            - '-w hidden'
+            - '-WindowStyle Hidden'
+            - 'bitsadmin'
+            - 'certutil'
+            - 'mshta http'
+            - 'mshta vbscript'
+    condition: selection_scripting_engine and selection_from_suspicious_path and selection_lnk_indicators
+falsepositives:
+    - Legitimate software installers that use encoded commands from temp directories
+    - Enterprise deployment scripts stored in user-writable locations
+level: high

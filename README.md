@@ -26,7 +26,7 @@
 
 ## Overview
 
-Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3200+ SIGMA rules, 430+ MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
+Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3,273 SIGMA rules, 377 MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
 
 Feed it a directory of logs — Muninn auto-detects the format, loads events into a SQLite database, and runs analysis. Save results to a persistent database with `--dbfile` and come back anytime: apply new SIGMA rules, run SQL queries, check IOCs — without re-parsing source files.
 
@@ -845,7 +845,7 @@ muninn -e ./evidence-before/ -r sigma-rules/ --diff ./evidence-after/
 
 ## SIGMA Rules
 
-3200+ rules from [SigmaHQ](https://github.com/SigmaHQ/sigma). Download directly or use your own:
+**3,273 detection rules** — 377 MITRE ATT&CK techniques, 14 tactics, 430 CVE exploits. SigmaHQ community rules + original Corax Team threat intelligence (Head Mare, PhantomCore APT).
 
 ```bash
 # Download rules from SigmaHQ (requires --features download)
@@ -857,17 +857,17 @@ muninn --download-rules all --rules-dir ./my-rules/  # custom output directory
 ```
 
 | Category | Rules |
-|----------|-------|
-| Windows | 2253 |
-| Cloud (AWS, Azure, GCP, M365) | 204 |
-| Linux | 147 |
-| Application | 96 |
+|----------|------:|
+| Windows (process, registry, PowerShell, file, network) | 2,253 |
+| Cloud (AWS, Azure, GCP, M365, Okta) | 204 |
+| Linux (auditd, syslog, process) | 147 |
+| Application (JVM, web frameworks) | 77 |
 | macOS | 48 |
-| Network | 45 |
-| Web | 42 |
-| Identity | 20 |
-| Category (Antivirus) | 7 |
-| Emerging Threats / CVE | 411 |
+| Network (Zeek, DNS, firewall) | 45 |
+| Web (IIS, Apache, Nginx) | 42 |
+| Identity (Okta, Azure AD) | 20 |
+| Category (cross-platform) | 7 |
+| CVE Exploits (2010–2025) | 430 |
 
 ```bash
 muninn -e events.json -r sigma-rules/                            # all rules
@@ -875,6 +875,8 @@ muninn -e events.json -r sigma-rules/rules/windows/process_creation/   # Windows
 muninn -e events.json -r sigma-rules/rules/linux/                      # Linux only
 muninn -e events.json -r sigma-rules/rules/cloud/                      # cloud only
 ```
+
+> **Contribute detection rules** — we welcome SIGMA rules from detection engineers, threat researchers, and incident responders worldwide. See [sigma_rules/CONTRIBUTING.md](sigma_rules/CONTRIBUTING.md) for the contribution guide and templates.
 
 <details>
 <summary><b>Supported SIGMA modifiers</b></summary>
@@ -1063,7 +1065,7 @@ SIGMA rules in `sigma_rules/` licensed under [DRL 1.1](https://github.com/SigmaH
 
 ## Обзор
 
-Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3200+ SIGMA-правил, 430+ техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
+Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3273 SIGMA-правила, 377 техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
 
 Укажите директорию с логами — Muninn сам определит формат, загрузит события в SQLite и выполнит анализ. Результаты можно сохранить в базу и возвращаться к ним сколько угодно: прогонять новые SIGMA-правила, делать SQL-запросы, проверять индикаторы — без повторного парсинга.
 
@@ -1226,4 +1228,6 @@ cargo test --features "all-parsers,cli,archive,download,tui,live,ioc-enrich"
 
 **AGPL-3.0** — см. [LICENSE](LICENSE).
 
-SIGMA-правила в `sigma_rules/` — [DRL 1.1](https://github.com/SigmaHQ/Detection-Rule-License) от SigmaHQ.
+SIGMA-правила в `sigma_rules/` — [DRL 1.1](https://github.com/SigmaHQ/Detection-Rule-License) от SigmaHQ. Оригинальные правила Corax Team — AGPL-3.0.
+
+> **Хотите помочь проекту?** Мы приглашаем специалистов по детекции угроз со всего мира: [sigma_rules/CONTRIBUTING.md](sigma_rules/CONTRIBUTING.md)

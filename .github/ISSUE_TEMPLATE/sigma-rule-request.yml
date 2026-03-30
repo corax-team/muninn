@@ -1,0 +1,78 @@
+name: "SIGMA Rule Request"
+description: "Request a detection rule for a specific threat, technique, or CVE"
+title: "sigma request: [description]"
+labels: ["sigma-rule", "rule-request", "help-wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Request a new SIGMA detection rule. The community or maintainers will create it.
+
+        **Before submitting**: search [existing rules](../sigma_rules/) to make sure coverage doesn't already exist.
+
+  - type: dropdown
+    id: request_type
+    attributes:
+      label: "Request Type"
+      options:
+        - CVE / Exploit Detection
+        - Threat Actor / APT Campaign
+        - Malware Family
+        - MITRE ATT&CK Technique
+        - Log Source Coverage Gap
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "What Should Be Detected?"
+      description: "Describe the threat, vulnerability, or technique that needs a detection rule."
+      placeholder: |
+        Example: CVE-2025-XXXXX is a remote code execution in [product].
+        Exploitation creates a child process [pattern] from [parent].
+        Currently no SIGMA rule exists for this CVE.
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: "References"
+      description: "Links to advisories, research, or threat intelligence."
+      placeholder: |
+        - https://nvd.nist.gov/vuln/detail/CVE-2025-XXXXX
+        - https://example.com/threat-analysis
+    validations:
+      required: true
+
+  - type: textarea
+    id: log_sources
+    attributes:
+      label: "Available Log Sources"
+      description: "What log data would contain evidence of this activity?"
+      placeholder: |
+        - Windows Security Event Log (EID 4688)
+        - Sysmon Process Creation (EID 1)
+        - Web server access logs
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "Priority"
+      description: "How actively is this being exploited?"
+      options:
+        - "Critical — Active exploitation in the wild"
+        - "High — Public exploit available"
+        - "Medium — Proof-of-concept exists"
+        - "Low — Theoretical / not yet observed"
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample_data
+    attributes:
+      label: "Sample Log Data"
+      description: "If available, paste redacted sample logs showing the malicious activity."
+      render: text

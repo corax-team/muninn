@@ -1,0 +1,43 @@
+title: SAM/SYSTEM Hive Copy via Volume Shadow Copy or Esentutl
+id: cbf30c2b-078f-4c90-ac7a-8a2aa199efd7
+status: stable
+description: |
+    Detects access to SAM, SYSTEM, or SECURITY registry hives via Volume
+    Shadow Copy paths or esentutl LOLBin. Attackers use VSS shadow copies
+    to bypass file locks on active hives, and esentutl to copy locked
+    database files. Both techniques extract offline credential data for
+    offline cracking.
+references:
+    - https://attack.mitre.org/techniques/T1003/002/
+    - https://www.ired.team/offensive-security/credential-access-and-credential-dumping/dumping-hashes-from-sam-registry
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.credential-access
+    - attack.t1003.002
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_vss_hive:
+        CommandLine|contains:
+            - 'HarddiskVolumeShadowCopy'
+        CommandLine|contains:
+            - '\config\SAM'
+            - '\config\SYSTEM'
+            - '\config\SECURITY'
+    selection_esentutl:
+        Image|endswith: '\esentutl.exe'
+        CommandLine|contains:
+            - '/y'
+            - '/vss'
+        CommandLine|contains:
+            - '\config\SAM'
+            - '\config\SYSTEM'
+            - '\config\SECURITY'
+            - '\ntds.dit'
+    condition: 1 of selection_*
+falsepositives:
+    - Legitimate backup software accessing VSS snapshots
+    - Windows Recovery operations
+level: critical

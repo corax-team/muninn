@@ -1,0 +1,78 @@
+title: Ransomware Pre-Encryption — Bulk Service and Process Kill
+id: 63d7c6f3-2ec4-494d-a3ee-6d682a542785
+status: stable
+description: |
+    Detects bulk stopping of backup, database, and security services commonly performed
+    by ransomware before encryption. Threat actors (LockBit, BlackCat, Conti, Play, Royal,
+    Akira) use automated scripts to kill services that hold file locks or could interfere
+    with encryption. Typically executed as a batch of net stop / sc stop / taskkill commands.
+references:
+    - https://thedfirreport.com/2024/08/12/threat-actors-toolkit-leveraging-sliver-poshc2-batch-scripts/
+    - https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-165a
+    - https://www.sentinelone.com/labs/lockbit-3-0-update-unpacking-the-anti-analysis-techniques/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.impact
+    - attack.t1489
+    - attack.defense-evasion
+    - attack.t1562.001
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_net_stop:
+        Image|endswith:
+            - '\net.exe'
+            - '\net1.exe'
+        CommandLine|contains: 'stop'
+    selection_sc_stop:
+        Image|endswith: '\sc.exe'
+        CommandLine|contains: 'stop'
+    selection_taskkill:
+        Image|endswith: '\taskkill.exe'
+        CommandLine|contains: '/f'
+    selection_targets:
+        CommandLine|contains:
+            - 'vss'
+            - 'sql'
+            - 'svc$'
+            - 'veeam'
+            - 'backup'
+            - 'sophos'
+            - 'MSSQL'
+            - 'SQLAgent'
+            - 'SQLBrowser'
+            - 'MSSQLServerADHelper'
+            - 'MSSQLSERVER'
+            - 'SQLWriter'
+            - 'MsDtsServer'
+            - 'ReportServer'
+            - 'wbengine'
+            - 'VeeamBackup'
+            - 'VeeamCloud'
+            - 'VeeamAgent'
+            - 'BackupExecAgent'
+            - 'BackupExecManagement'
+            - 'AcronisAgent'
+            - 'PDVFSService'
+            - 'ccEvtMgr'
+            - 'ccSetMgr'
+            - 'SavRoam'
+            - 'RTVscan'
+            - 'DefWatch'
+            - 'QBIDPService'
+            - 'Intuit.QuickBooks'
+            - 'YooBackup'
+            - 'zhudongfangyu'
+            - 'stc_raw_agent'
+            - 'VSNAPVSS'
+            - 'QBCFMonitorService'
+            - 'AcrSch2Svc'
+            - 'mfevtp'
+            - 'BMR Boot Service'
+    condition: (1 of selection_net_stop or 1 of selection_sc_stop or selection_taskkill) and selection_targets
+falsepositives:
+    - Legitimate IT administration stopping services during maintenance windows
+    - Software installers that stop dependent services during updates
+level: high

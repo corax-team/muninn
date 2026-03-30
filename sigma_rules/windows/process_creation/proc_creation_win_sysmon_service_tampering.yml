@@ -1,0 +1,58 @@
+title: Sysmon Service or Driver Tampering
+id: 72eaa3b0-ea7a-4b82-85f8-a6805a16f93a
+status: stable
+description: |
+    Detects attempts to stop, disable, or uninstall the Sysmon service or
+    unload its minifilter driver. Attackers target Sysmon to blind defenders
+    and eliminate process creation, network connection, and file event logging.
+    This is a critical defense evasion indicator during active intrusions.
+references:
+    - https://attack.mitre.org/techniques/T1562/001/
+    - https://www.ired.team/offensive-security/defense-evasion/disabling-sysmon
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.defense-evasion
+    - attack.t1562.001
+    - attack.t1562.004
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_sc_stop:
+        Image|endswith: '\sc.exe'
+        CommandLine|contains:
+            - 'stop'
+            - 'delete'
+            - 'config'
+            - 'disable'
+    selection_net_stop:
+        Image|endswith:
+            - '\net.exe'
+            - '\net1.exe'
+        CommandLine|contains: 'stop'
+    selection_sysmon_target:
+        CommandLine|contains:
+            - 'Sysmon'
+            - 'sysmon'
+            - 'SysmonDrv'
+            - 'sysmondrv'
+    selection_sysmon_uninstall:
+        CommandLine|contains:
+            - 'sysmon -u'
+            - 'Sysmon -u'
+            - 'sysmon64 -u'
+            - 'Sysmon64 -u'
+    selection_fltmc:
+        Image|endswith: '\fltmc.exe'
+        CommandLine|contains:
+            - 'unload'
+    selection_fltmc_sysmon:
+        CommandLine|contains:
+            - 'SysmonDrv'
+            - 'sysmondrv'
+    condition: ((selection_sc_stop or selection_net_stop) and selection_sysmon_target) or selection_sysmon_uninstall or (selection_fltmc and selection_fltmc_sysmon)
+falsepositives:
+    - Legitimate Sysmon configuration updates (use sysmon -c, not -u)
+    - Sysmon version upgrades
+level: critical

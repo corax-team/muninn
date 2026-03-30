@@ -1,0 +1,38 @@
+title: COM Object Hijacking via InprocServer32 Modification
+id: 0baa2fa1-affe-4535-b5b0-e76a9baeaef6
+status: stable
+description: |
+    Detects modification of HKCU\Software\Classes\CLSID InprocServer32 values
+    pointing to suspicious DLL locations. COM hijacking is a stealthy persistence
+    mechanism where attackers register a malicious DLL for a frequently-used COM
+    object, achieving code execution whenever that object is instantiated.
+    HKCU keys take precedence over HKLM, making this user-level persistence.
+references:
+    - https://attack.mitre.org/techniques/T1546/015/
+    - https://www.elastic.co/blog/how-hunt-for-persistence-using-elastic-security
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.persistence
+    - attack.t1546.015
+    - attack.defense-evasion
+logsource:
+    product: windows
+    category: registry_set
+detection:
+    selection:
+        TargetObject|contains: '\Software\Classes\CLSID\'
+        TargetObject|endswith: '\InprocServer32\(Default)'
+    filter_system_paths:
+        Details|contains:
+            - 'C:\Windows\System32\'
+            - 'C:\Windows\SysWOW64\'
+            - 'C:\Program Files\'
+            - 'C:\Program Files (x86)\'
+    filter_empty:
+        Details: ''
+    condition: selection and not filter_system_paths and not filter_empty
+falsepositives:
+    - Legitimate software registration of COM objects in user profile
+    - Development environments registering debug COM components
+level: medium

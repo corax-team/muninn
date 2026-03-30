@@ -1,0 +1,43 @@
+title: Kerberos Golden Ticket Indicators
+id: d11b263e-bc8d-4dac-8f72-9bfcc287ec57
+status: stable
+description: |
+    Detects indicators of Golden Ticket usage by monitoring Kerberos TGS
+    requests (EID 4769) where the ticket encryption type is RC4 (0x17)
+    and the service name targets a high-value service. Golden Tickets
+    are forged TGTs that grant unrestricted access to any service in the
+    domain. RC4 encryption in Kerberos TGS requests in modern AD environments
+    (where AES should be the norm) is a strong indicator of forged tickets.
+references:
+    - https://attack.mitre.org/techniques/T1558/001/
+    - https://www.semperis.com/blog/golden-ticket-attack-detection/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.credential-access
+    - attack.t1558.001
+    - attack.lateral-movement
+    - attack.t1550.003
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 4769
+        TicketEncryptionType: '0x17'
+    selection_services:
+        ServiceName|contains:
+            - 'krbtgt'
+            - 'cifs'
+            - 'ldap'
+            - 'http'
+            - 'host'
+            - 'rpcss'
+    filter_machine_accounts:
+        TargetUserName|endswith: '$'
+        ServiceName: 'krbtgt'
+    condition: selection and selection_services and not filter_machine_accounts
+falsepositives:
+    - Legacy systems that still use RC4 Kerberos encryption
+    - Applications that explicitly request RC4 tickets
+level: high

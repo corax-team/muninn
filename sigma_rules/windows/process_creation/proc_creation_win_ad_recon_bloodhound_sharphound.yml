@@ -1,0 +1,54 @@
+title: Active Directory Reconnaissance — BloodHound/SharpHound Collection
+id: 7c7aa30d-e1ac-49e8-a900-0fa05ab293e5
+status: stable
+description: |
+    Detects execution of BloodHound/SharpHound AD enumeration tools used
+    for Active Directory attack path mapping. Nearly every modern AD-focused
+    intrusion uses BloodHound for reconnaissance. SharpHound collects user,
+    group, session, ACL, and trust data to map privilege escalation paths.
+references:
+    - https://attack.mitre.org/techniques/T1087/002/
+    - https://bloodhound.readthedocs.io
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.discovery
+    - attack.t1087.002
+    - attack.t1069.002
+    - attack.t1482
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_sharphound:
+        CommandLine|contains:
+            - 'SharpHound'
+            - 'Invoke-BloodHound'
+            - 'BloodHound.exe'
+    selection_collector_flags:
+        CommandLine|contains:
+            - '-c All'
+            - '-CollectionMethod All'
+            - '-CollectionMethod Session'
+            - '-CollectionMethod LoggedOn'
+            - '-CollectionMethod Group'
+            - '-CollectionMethod ACL'
+            - '-CollectionMethod Trust'
+            - '--CollectionMethods'
+            - '-c DcOnly'
+            - '-c DCOnly'
+    selection_output:
+        CommandLine|contains:
+            - 'BloodHound'
+            - '_BloodHound.zip'
+            - 'SharpHound'
+    selection_azurehound:
+        CommandLine|contains:
+            - 'AzureHound'
+            - 'Invoke-AzureHound'
+            - 'azurehound'
+    condition: 1 of selection_*
+falsepositives:
+    - Authorized Active Directory security assessments
+    - Purple team exercises
+level: critical

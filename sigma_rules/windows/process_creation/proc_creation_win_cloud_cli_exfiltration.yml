@@ -1,0 +1,62 @@
+title: Data Exfiltration via Cloud CLI Tools
+id: 82e714b2-3179-4b96-8fd3-a466c7077f62
+status: stable
+description: |
+    Detects usage of cloud provider CLI tools (azcopy, aws, gsutil, gcloud)
+    for potential data exfiltration. Threat actors increasingly use legitimate
+    cloud CLI tools to upload stolen data to attacker-controlled cloud storage,
+    bypassing traditional DLP controls. Commonly seen in ransomware double
+    extortion and APT campaigns.
+references:
+    - https://www.microsoft.com/en-us/security/blog/2023/07/06/the-five-day-job-a-blackbyte-ransomware-intrusion-case-study/
+    - https://attack.mitre.org/techniques/T1567/002/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.exfiltration
+    - attack.t1567.002
+    - attack.t1537
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_azcopy:
+        Image|endswith: '\azcopy.exe'
+        CommandLine|contains:
+            - 'copy'
+            - 'sync'
+    selection_aws_upload:
+        Image|endswith:
+            - '\aws.exe'
+            - '\aws.cmd'
+        CommandLine|contains:
+            - 's3 cp'
+            - 's3 sync'
+            - 's3 mv'
+    selection_gsutil:
+        CommandLine|contains:
+            - 'gsutil cp'
+            - 'gsutil rsync'
+            - 'gcloud storage cp'
+    selection_sensitive_paths:
+        CommandLine|contains:
+            - '\Users\'
+            - '\Documents\'
+            - '\Desktop\'
+            - '\Downloads\'
+            - '\Shares\'
+            - '\Finance\'
+            - '\HR\'
+            - '\Confidential\'
+            - '.pst'
+            - '.ost'
+            - '.kdbx'
+            - '.key'
+            - '.pfx'
+            - 'backup'
+    condition: (selection_azcopy or selection_aws_upload or selection_gsutil) and selection_sensitive_paths
+falsepositives:
+    - Legitimate cloud backup solutions using CLI tools
+    - Cloud migration projects
+    - DevOps pipelines with cloud storage operations
+level: high

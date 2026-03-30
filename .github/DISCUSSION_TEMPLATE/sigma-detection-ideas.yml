@@ -1,0 +1,25 @@
+title: "SIGMA Detection Engineering"
+labels: ["sigma-rule", "discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Detection Engineering Discussions
+
+        Share ideas, techniques, and research related to SIGMA detection rules.
+
+        **Topics welcome:**
+        - New detection techniques for emerging threats
+        - False positive reduction strategies
+        - ATT&CK technique coverage analysis
+        - Threat actor TTP discussions
+        - Log source availability and coverage gaps
+        - Rule quality and testing methodology
+
+  - type: textarea
+    id: topic
+    attributes:
+      label: "Discussion Topic"
+      description: "What would you like to discuss?"
+    validations:
+      required: true

@@ -1,0 +1,66 @@
+title: C2 Framework Execution — Cobalt Strike, Sliver, Havoc, Mythic
+id: bc7707e0-4ec3-4ee3-b47d-22a6e37afc31
+status: stable
+description: |
+    Detects execution indicators of popular Command and Control frameworks
+    including Cobalt Strike, Sliver, Havoc, Brute Ratel, and Mythic.
+    Detection is based on known default file names, named pipes,
+    command-line patterns, and execution characteristics.
+references:
+    - https://attack.mitre.org/techniques/T1071/
+    - https://thedfirreport.com/2024/08/12/threat-actors-toolkit-leveraging-sliver-poshc2-batch-scripts/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.command-and-control
+    - attack.t1071.001
+    - attack.execution
+    - attack.t1059
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_cobalt_strike:
+        CommandLine|contains:
+            - 'beacon.exe'
+            - 'beacon.dll'
+            - 'artifact.exe'
+            - 'pipe\\msagent_'
+            - 'pipe\\MSSE-'
+            - 'pipe\\status_'
+            - 'pipe\\postex_'
+            - 'pipe\\postex_ssh_'
+    selection_sliver:
+        CommandLine|contains:
+            - 'SLIVER'
+            - 'sliver-client'
+            - 'sliver-server'
+        Image|endswith:
+            - '_sliver.exe'
+    selection_havoc:
+        CommandLine|contains:
+            - 'havoc.exe'
+            - 'HavocFramework'
+            - 'demon.exe'
+    selection_brute_ratel:
+        CommandLine|contains:
+            - 'bruteratel'
+            - 'BRc4'
+            - 'badger.exe'
+    selection_poshc2:
+        CommandLine|contains:
+            - 'PoshC2'
+            - 'posh-server'
+            - 'Invoke-Pbind'
+            - 'Invoke-PoshC2'
+    selection_mythic:
+        CommandLine|contains:
+            - 'apollo.exe'
+            - 'athena.exe'
+            - 'poseidon'
+            - 'MythicAgent'
+    condition: 1 of selection_*
+falsepositives:
+    - Authorized red team engagements
+    - Security tool testing in lab environments
+level: critical

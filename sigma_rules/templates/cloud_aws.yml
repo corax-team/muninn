@@ -1,0 +1,32 @@
+title: TODO — AWS Suspicious API Activity
+id: 00000000-0000-0000-0000-000000000000  # Replace: uuidgen
+status: experimental
+description: |
+    Detects suspicious AWS API call [action] that may indicate [threat scenario].
+    This technique is used for [purpose] in cloud environments.
+references:
+    - https://example.com/cloud-threat-research
+    - https://attack.mitre.org/techniques/TXXXX/
+author: Your Name (@handle)
+date: 2026-01-01
+tags:
+    - attack.discovery            # or appropriate tactic
+    - attack.t1087.004           # Account Discovery: Cloud Account
+logsource:
+    product: aws
+    service: cloudtrail
+detection:
+    selection:
+        eventSource: 'iam.amazonaws.com'
+        eventName:
+            - 'ListUsers'
+            - 'ListRoles'
+            - 'GetAccountAuthorizationDetails'
+    filter_known_automation:
+        userIdentity.arn|contains:
+            - 'AWSServiceRole'
+    condition: selection and not filter_known_automation
+falsepositives:
+    - Legitimate IAM audit scripts
+    - AWS Config or Security Hub scans
+level: medium

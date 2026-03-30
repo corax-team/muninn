@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "Muninn Documentation"
+    url: "https://github.com/corax-team/muninn#readme"
+    about: "General documentation and usage guide"
+  - name: "SigmaHQ Specification"
+    url: "https://sigmahq.io/docs/basics/rules.html"
+    about: "SIGMA rule specification and format documentation"
+  - name: "MITRE ATT&CK Navigator"
+    url: "https://mitre-attack.github.io/attack-navigator/"
+    about: "Browse MITRE ATT&CK techniques for rule tagging"

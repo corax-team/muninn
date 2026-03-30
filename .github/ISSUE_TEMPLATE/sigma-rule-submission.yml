@@ -1,0 +1,141 @@
+name: "SIGMA Rule Submission"
+description: "Submit a new SIGMA detection rule"
+title: "sigma: [category] detection for [description]"
+labels: ["sigma-rule", "community-contribution"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for contributing a detection rule! Please fill out the fields below.
+        If you're submitting multiple related rules, you can submit them as a single PR instead.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: "Target Platform"
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Cloud (AWS/Azure/GCP)
+        - Network
+        - Web
+        - Application
+        - Identity
+        - Cross-platform
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: "Detection Category"
+      options:
+        - Process Creation
+        - File Event
+        - Registry
+        - Network Connection
+        - PowerShell
+        - DNS Query
+        - Image Load
+        - Driver Load
+        - Named Pipe
+        - WMI Event
+        - Cloud API
+        - Web Server
+        - Authentication
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: threat_type
+    attributes:
+      label: "Threat Type"
+      options:
+        - APT / Threat Actor
+        - Malware / Ransomware
+        - CVE Exploit
+        - Living-off-the-Land (LOLBin)
+        - Persistence Technique
+        - Lateral Movement
+        - Credential Access
+        - Defense Evasion
+        - Data Exfiltration
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: rule_yaml
+    attributes:
+      label: "Rule YAML"
+      description: "Paste the complete SIGMA rule in YAML format"
+      render: yaml
+      placeholder: |
+        title: Descriptive Title
+        id: generate-a-uuid
+        status: experimental
+        description: |
+            What this rule detects and why.
+        references:
+            - https://example.com/research
+        author: Your Name
+        date: 2026-01-01
+        tags:
+            - attack.execution
+            - attack.t1059
+        logsource:
+            product: windows
+            category: process_creation
+        detection:
+            selection:
+                CommandLine|contains: 'suspicious_pattern'
+            condition: selection
+        falsepositives:
+            - Known legitimate use
+        level: high
+    validations:
+      required: true
+
+  - type: textarea
+    id: threat_context
+    attributes:
+      label: "Threat Context"
+      description: "Describe the threat, technique, or campaign this rule detects. Include links to threat intelligence."
+      placeholder: "This rule detects [threat] based on [research/incident]. The technique is used by [actor] for [purpose]."
+    validations:
+      required: true
+
+  - type: textarea
+    id: testing
+    attributes:
+      label: "Testing"
+      description: "How did you test this rule? Include sample log data, Atomic Red Team test IDs, or reproduction steps."
+      placeholder: |
+        - Tested against real EVTX samples from [source]
+        - Atomic Red Team test: T1059.001-1
+        - Manual reproduction: [steps]
+
+  - type: textarea
+    id: false_positives
+    attributes:
+      label: "Known False Positives"
+      description: "What legitimate activity could trigger this rule?"
+      placeholder: "Administrative use of PowerShell for system management"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: "Submission Checklist"
+      options:
+        - label: "Rule has a unique UUID"
+          required: true
+        - label: "Rule includes MITRE ATT&CK tags"
+          required: true
+        - label: "Rule has at least one reference link"
+          required: true
+        - label: "I checked that no duplicate rule exists"
+          required: true
+        - label: "Rule follows the naming convention"
+          required: true

@@ -1,0 +1,48 @@
+name: SIGMA Rule Validation
+
+on:
+  pull_request:
+    paths:
+      - 'sigma_rules/**/*.yml'
+
+jobs:
+  validate:
+    name: Validate SIGMA Rules
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find changed SIGMA rules
+        id: changed
+        run: |
+          CHANGED=$(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" -- 'sigma_rules/**/*.yml' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No SIGMA rule changes detected"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed rules:"
+            echo "$CHANGED"
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "$CHANGED" > /tmp/changed_rules.txt
+          fi
+
+      - name: Validate YAML syntax
+        if: steps.changed.outputs.has_changes == 'true'
+        run: |
+          pip install pyyaml
+          python3 scripts/validate_sigma.py --check-yaml /tmp/changed_rules.txt
+
+      - name: Validate required fields
+        if: steps.changed.outputs.has_changes == 'true'
+        run: |
+          python3 scripts/validate_sigma.py --check-fields /tmp/changed_rules.txt
+
+      - name: Check for duplicate UUIDs
+        if: steps.changed.outputs.has_changes == 'true'
+        run: |
+          python3 scripts/validate_sigma.py --check-duplicates

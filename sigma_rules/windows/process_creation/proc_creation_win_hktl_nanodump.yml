@@ -1,0 +1,48 @@
+title: Nanodump LSASS Memory Dump Tool
+id: d108678b-47fd-4f0a-b7c6-3388d9d0f31c
+status: stable
+description: |
+    Detects execution of nanodump, a stealthy LSASS credential dumping tool
+    that uses syscalls and fork techniques to avoid detection. Nanodump
+    creates minidumps of LSASS using direct syscalls, avoiding API hooks.
+    It supports multiple dump methods including process forking (--fork),
+    snapshot (--snapshot), and elevated handle duplication.
+references:
+    - https://github.com/helpsystems/nanodump
+    - https://attack.mitre.org/techniques/T1003/001/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.credential-access
+    - attack.t1003.001
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_name:
+        Image|endswith:
+            - '\nanodump.exe'
+            - '\nanodump.x64.exe'
+    selection_cmdline:
+        CommandLine|contains:
+            - 'nanodump'
+            - '--fork'
+            - '--snapshot'
+            - '--dup'
+            - '--elevate-handle'
+            - '--getpid'
+            - '--write C:'
+            - '--write .'
+    selection_known_flags:
+        CommandLine|contains:
+            - '--valid'
+            - '--write'
+            - '--duplicate'
+            - '--duplicate-elevate'
+            - '--seclogon-leak-local'
+            - '--seclogon-duplicate'
+    condition: 1 of selection_*
+falsepositives:
+    - Authorized penetration testing
+    - Red team exercises
+level: critical

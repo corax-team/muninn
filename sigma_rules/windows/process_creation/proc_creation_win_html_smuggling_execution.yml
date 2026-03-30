@@ -1,0 +1,58 @@
+title: HTML Smuggling — Suspicious Execution After Browser File Download
+id: 34ab2ab6-0b2e-4af2-931c-d01ffab7275b
+status: stable
+description: |
+    Detects execution of ISO, VHD, IMG, or archive files from browser download
+    locations. HTML smuggling delivers payloads via JavaScript Blob objects in
+    the browser, bypassing network security controls. The downloaded file is
+    typically an ISO/VHD container or password-protected archive containing
+    the actual payload. Used by Qakbot, IcedID, Bumblebee, and Nobelium.
+references:
+    - https://www.microsoft.com/en-us/security/blog/2021/11/11/html-smuggling-surges-highly-evasive-loader-technique-increasingly-used-in-banking-malware-phishing-and-other-campaigns/
+    - https://attack.mitre.org/techniques/T1027/006/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.initial-access
+    - attack.t1566.001
+    - attack.defense-evasion
+    - attack.t1027.006
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_parent_browser:
+        ParentImage|endswith:
+            - '\chrome.exe'
+            - '\msedge.exe'
+            - '\firefox.exe'
+            - '\brave.exe'
+            - '\opera.exe'
+            - '\iexplore.exe'
+    selection_child_suspicious:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\rundll32.exe'
+            - '\regsvr32.exe'
+    selection_explorer_iso:
+        ParentImage|endswith: '\explorer.exe'
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+        CommandLine|contains:
+            - '\Downloads\'
+            - '\AppData\Local\Temp\'
+    condition: (selection_parent_browser and selection_child_suspicious) or selection_explorer_iso
+falsepositives:
+    - Legitimate browser extensions that execute local scripts
+    - Web-based development tools
+level: high

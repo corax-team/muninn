@@ -1,0 +1,53 @@
+title: File Timestomping via PowerShell or Native Tools
+id: 5cfbe848-7d30-4fc9-bb0f-ad69baaf3a53
+status: stable
+description: |
+    Detects file timestamp modification using PowerShell Set-ItemProperty or
+    .NET DateTime methods, and native tools like NirCmd or timestomp.
+    Attackers modify file creation/modification times to blend malicious files
+    with legitimate system files and evade forensic timeline analysis.
+references:
+    - https://attack.mitre.org/techniques/T1070/006/
+    - https://www.ired.team/offensive-security/defense-evasion/t1099-timestomping
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.defense-evasion
+    - attack.t1070.006
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_powershell_datetime:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'CreationTime'
+            - 'LastWriteTime'
+            - 'LastAccessTime'
+            - 'SetCreationTime'
+            - 'SetLastWriteTime'
+            - 'SetLastAccessTime'
+    selection_powershell_parse:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+        CommandLine|contains:
+            - 'DateTime'
+            - 'Get-Date'
+        CommandLine|contains:
+            - 'CreationTime'
+            - 'LastWriteTime'
+    selection_tools:
+        CommandLine|contains:
+            - 'timestomp'
+            - 'SetMACE'
+            - 'nircmd setfiletime'
+            - 'BulkFileChanger'
+            - 'NewFileTime'
+    condition: 1 of selection_*
+falsepositives:
+    - Build systems that set file timestamps for reproducible builds
+    - Backup restoration tools that preserve original timestamps
+level: high

@@ -1,0 +1,35 @@
+title: TODO — Short Descriptive Title
+id: 00000000-0000-0000-0000-000000000000  # Replace: uuidgen
+status: experimental
+description: |
+    Detects [suspicious behavior] by monitoring process creation events for [pattern].
+    This technique is used by [threat actor / malware / red team tool] to [objective].
+references:
+    - https://example.com/threat-research
+    - https://attack.mitre.org/techniques/TXXXX/
+author: Your Name (@handle)
+date: 2026-01-01
+tags:
+    - attack.execution           # MITRE tactic
+    - attack.t1059.001           # MITRE technique/sub-technique
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_image:
+        Image|endswith:
+            - '\suspicious_tool.exe'
+    selection_cmdline:
+        CommandLine|contains:
+            - 'suspicious_argument'
+            - 'another_pattern'
+    filter_legitimate:
+        ParentImage|endswith:
+            - '\legitimate_parent.exe'
+        User|contains:
+            - 'SYSTEM'
+    condition: 1 of selection_* and not filter_legitimate
+falsepositives:
+    - Legitimate administrative use of [tool]
+    - Software [name] during [operation]
+level: high

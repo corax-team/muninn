@@ -1,0 +1,67 @@
+title: Rapid Active Directory Discovery Command Sequence
+id: 779ecdcb-6300-4c89-8791-ce2d3e5c437f
+status: stable
+description: |
+    Detects rapid execution of common discovery commands used by attackers
+    during the initial reconnaissance phase after gaining access. This pattern
+    of multiple discovery commands from the same host in a short window is
+    characteristic of automated post-exploitation frameworks (Cobalt Strike,
+    Sliver, Metasploit) and manual attacker enumeration scripts.
+references:
+    - https://attack.mitre.org/tactics/TA0007/
+    - https://thedfirreport.com/2024/08/12/threat-actors-toolkit-leveraging-sliver-poshc2-batch-scripts/
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.discovery
+    - attack.t1082
+    - attack.t1016
+    - attack.t1018
+    - attack.t1069.002
+    - attack.t1087.002
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_hostname:
+        Image|endswith:
+            - '\hostname.exe'
+            - '\whoami.exe'
+    selection_network:
+        Image|endswith:
+            - '\ipconfig.exe'
+            - '\netstat.exe'
+            - '\arp.exe'
+            - '\route.exe'
+            - '\nslookup.exe'
+    selection_domain:
+        Image|endswith:
+            - '\net.exe'
+            - '\net1.exe'
+            - '\nltest.exe'
+        CommandLine|contains:
+            - 'domain'
+            - 'group'
+            - 'user'
+            - 'view'
+            - 'share'
+            - 'localgroup'
+            - '/dclist'
+            - '/domain_trusts'
+    selection_system:
+        Image|endswith:
+            - '\systeminfo.exe'
+            - '\tasklist.exe'
+            - '\qprocess.exe'
+    selection_ad_specific:
+        CommandLine|contains:
+            - 'dsquery'
+            - 'csvde'
+            - 'ldifde'
+            - 'adfind'
+            - 'AdFind'
+    condition: 3 of selection_*
+falsepositives:
+    - System administrators running diagnostic scripts
+    - Monitoring tools that execute system commands
+level: medium

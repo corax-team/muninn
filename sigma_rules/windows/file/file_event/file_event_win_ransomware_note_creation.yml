@@ -1,0 +1,60 @@
+title: Ransomware Note File Creation
+id: 4e2b0fc5-280e-45ad-a79e-94d0a42e608b
+status: stable
+description: |
+    Detects creation of files matching common ransomware note naming patterns.
+    Nearly all ransomware families drop instruction files with recognizable names
+    before or during encryption. Detection of ransom note creation is a critical
+    late-stage indicator that encryption is imminent or in progress.
+references:
+    - https://thedfirreport.com/2024/08/12/threat-actors-toolkit-leveraging-sliver-poshc2-batch-scripts/
+    - https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-136a
+author: Corax Security
+date: 2026-03-30
+tags:
+    - attack.impact
+    - attack.t1486
+logsource:
+    product: windows
+    category: file_event
+detection:
+    selection_name:
+        TargetFilename|contains:
+            - 'DECRYPT_INSTRUCTION'
+            - 'DECRYPT_FILES'
+            - 'DECRYPT_YOUR_FILES'
+            - 'HOW_TO_DECRYPT'
+            - 'HOW_TO_RECOVER'
+            - 'HOW_TO_RESTORE'
+            - 'RECOVER_YOUR_FILES'
+            - 'RESTORE_FILES'
+            - 'README_FOR_DECRYPT'
+            - 'RECOVERY_INFORMATION'
+            - 'RANSOM_NOTE'
+            - '_readme.txt'
+            - '-RECOVER-'
+            - '-readme.txt'
+            - 'UNLOCK_FILES'
+            - '#README#'
+            - '!README!'
+            - '#DECRYPT#'
+            - '!DECRYPT!'
+            - 'IMPORTANT_README'
+            - 'FILES_ENCRYPTED'
+            - '#FILESENCRYPTED'
+            - 'YOUR_FILES_ARE_ENCRYPTED'
+            - 'RESTORE-MY-FILES'
+            - 'HOW-TO-DECRYPT'
+    selection_lockbit:
+        TargetFilename|endswith:
+            - 'Restore-My-Files.txt'
+            - '.README.txt'
+    filter_temp:
+        TargetFilename|contains:
+            - '\AppData\Local\Temp\'
+            - '\test\'
+    condition: (selection_name or selection_lockbit) and not filter_temp
+falsepositives:
+    - Security tools that create test ransom note files for detection validation
+    - Ransomware awareness training simulations
+level: critical

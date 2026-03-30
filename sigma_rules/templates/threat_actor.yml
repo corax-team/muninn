@@ -1,0 +1,35 @@
+title: "TODO — APT [Actor Name] — [Technique Description]"
+id: 00000000-0000-0000-0000-000000000000  # Replace: uuidgen
+status: experimental
+description: |
+    Detects [specific TTP] used by [threat actor name] during [campaign/operation].
+    [How the technique is implemented — file paths, tool names, command-line patterns].
+    [What makes this distinct from generic technique usage].
+references:
+    - https://example.com/apt-analysis
+    - https://attack.mitre.org/groups/GXXXX/
+author: Your Name (@handle)
+date: 2026-01-01
+tags:
+    - attack.execution           # primary tactic
+    - attack.t1059               # primary technique
+    - attack.persistence         # additional tactics
+    - attack.t1053.005           # additional techniques
+    - threat-actor.actor-name    # lowercase, hyphen-separated
+logsource:
+    product: windows
+    category: process_creation
+detection:
+    selection_tool:
+        Image|endswith:
+            - '\actor_specific_tool.exe'
+        Image|contains:
+            - '\AppData\'
+    selection_behavior:
+        CommandLine|contains:
+            - 'actor_specific_argument'
+            - 'unique_c2_pattern'
+    condition: 1 of selection_*
+falsepositives:
+    - None known; patterns are specific to this threat actor's tooling
+level: critical
