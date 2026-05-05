@@ -1,0 +1,20 @@
+title: Detects Python under ProgramData
+id: 9b48a7c2-f3e1-4d8a-9a72-e6d5f7e1d2c3
+status: experimental
+description: The rule detects Python running from ProgramData folder
+author: RussianPanda
+date: 2025/4/19
+tags:
+    - T1059.006
+logsource:
+  category: image_load
+  product: windows
+  service: sysmon
+detection:
+  selection:
+    Image|contains: 'C:\ProgramData\python\python.exe'
+    ImageLoaded|contains: 'C:\ProgramData\python\'
+  condition: selection
+falsepositives:
+    - Unknown
+level: medium

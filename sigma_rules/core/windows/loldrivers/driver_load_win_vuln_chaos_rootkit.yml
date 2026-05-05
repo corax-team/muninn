@@ -1,0 +1,31 @@
+title: Driver Load - Chaos-Rootkit.sys
+id: 16c20ae1-600a-59ba-bb76-50bd93780ff7
+status: experimental
+description: |
+    Detects loading of driver Chaos-Rootkit.sys via hash.
+    Chaos-Rootkit is a x64 ring0 rootkit with process hiding, privilege escalation, and capabilities for protecting and unprotecting processes and ability to restrict access to files except for whitelisted process work seamlessly on the latest Windows versions.
+references:
+    - https://www.loldrivers.io/drivers/de62baae-872d-4e9a-b6d9-b0ac99854c66/
+    - https://github.com/ZeroMemoryEx/Chaos-Rootkit
+author: goosvorbook
+date: 2024/06/20
+modified: 2026/05/04
+tags:
+    - attack.privilege_escalation
+    - attack.t1543.003
+    - attack.t1068
+    - loldrivers.vulnerable
+logsource:
+    product: windows
+    category: driver_load
+detection:
+    selection_hashes:
+        Hashes|contains:
+            - 'MD5=443e8d915c04c370b7c31bb5f11ebab7'
+            - 'SHA1=c3f8b7f0995073abb58c2aec1b6062f89fe838a0'
+            - 'SHA256=bdc73f752c1353d41e877d8bf42a1c53f0bba7d6f52348aaef60e06f4d3087d0'
+            - 'IMPHASH=0abe54d37cd1a70ed9041ab7d80318a9'
+    condition: selection_hashes
+falsepositives:
+    - Unknown
+level: high

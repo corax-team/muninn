@@ -1,0 +1,27 @@
+title: Suspicious C2 Communication from Stealer/Banker IOCs
+id: 6c4d1a2c-3f91-4c8f-9c83-7a13b3b7c1a9
+status: experimental
+author: AbdulRahman (abdul.myid@gmail.com)
+logsource:
+  category: network_connection
+  product: windows
+detection:
+  selection:
+    DestinationIp|endswith:
+      - "65.109.242.172"
+      - "103.245.231.187"
+      - "202.71.14.181"
+      - "94.154.35.238"
+      - "79.137.203.101"
+      - "196.251.70.37"
+    DestinationPort:
+      - 80
+      - 443
+      - 8089
+  condition: selection
+falsepositives:
+  - Legitimate external connections (verify context)
+level: high
+tags:
+  - attack.command_and_control
+  - attack.t1071

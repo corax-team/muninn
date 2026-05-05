@@ -1,0 +1,62 @@
+title: Suspicious Process Spawned From PowerPoint - Potential CVE-2009-0556 Exploit
+id: 525a3d08-2230-49ae-98db-f665caca4f07
+status: experimental
+description: |
+  Detects a suspicious child process spawned by Microsoft PowerPoint (POWERPNT.EXE), which is a common indicator  of exploitation of memory corruption vulnerabilities such as CVE-2009-0556. This vulnerability allows remote   code execution via a specially crafted PowerPoint file containing a malformed OutlineTextRefAtom structure.
+  
+  FR=> Détecte la création d'un processus enfant suspect lancé par Microsoft PowerPoint (POWERPNT.EXE), ce qui constitue un indicateur courant de l'exploitation de vulnérabilités de corruption mémoire, telles que la CVE-2009-0556. Cette vulnérabilité permet l'exécution de code à distance via un fichier PowerPoint spécialement conçu contenant une structure OutlineTextRefAtom malformée.
+references:
+  - https://www.cve.org/CVERecord?id=CVE-2009-0556
+  - https://nvd.nist.gov/vuln/detail/CVE-2009-0556
+  - https://docs.microsoft.com/en-us/security-updates/securitybulletins/2009/ms09-017
+author: Adama ASSIONGBON – SOC & CTI  Consultant | https://www.linkedin.com/in/adama-assiongbon-9029893a/
+date: 2026-01-10
+modified: 2026-01-31
+tags:
+  - attack.execution
+  - attack.t1204.002  # User Execution Malicious File
+  - attack.initial-access 
+  - attack.t1137  # Office Application Startup 
+  - attack.persistence
+  - cve.2009-0556
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  # 1. Le parent est PowerPoint
+  parent_is_ppt:
+    ParentImage|endswith: '\POWERPNT.EXE'
+
+  # 2. L'enfant est un interpréteur suspect
+  suspicious_child:
+    Image|endswith:
+      - '\powershell.exe'
+      - '\cmd.exe'
+      - '\rundll32.exe'
+      - '\regsvr32.exe'
+
+  # 3. CONTEXTE AMÉLIORÉ : PowerPoint a interagi avec un fichier de présentation
+  # (Ouvre un fichier OU enregistre un fichier - car l'exploit peut se déclencher à l'enregistrement)
+  ppt_file_context:
+    ParentCommandLine|contains:
+      - '.ppt'
+      - '.pptx'
+      - '.pps'
+      - '.ppsx'
+      - '.pot'
+      - '.potx'
+      - '.odp'    # Format OpenDocument
+      - ' /c '    # Argument courant pour les conversions (ex: PowerPoint /c fichier.ppt)
+
+  # 4. FILTRE CRITIQUE : Exclut les binaires depuis les chemins systèmes légitimes
+  filter_legit_system_path:
+    Image|startswith:
+      - 'C:\Windows\System32\'
+      - 'C:\Windows\SysWOW64\'
+      - 'C:\Program Files\'
+
+  # Condition finale
+  condition: parent_is_ppt and suspicious_child and ppt_file_context and not filter_legit_system_path
+falsepositives:
+  - Legitimate but rare automation or administrative scripts executed from within PowerPoint.
+level: high

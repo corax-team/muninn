@@ -2,7 +2,35 @@
 
 Curated list of the highest-quality SIGMA detection rule sources. Use these to expand Muninn's detection coverage or contribute rules adapted from these sources (respecting licenses).
 
-**Current baseline**: 3,273 rules (3,234 SigmaHQ + 24 Head Mare/PhantomCore + 15 APT Corax Team)
+**Current baseline**: 3,981 rules (3,234 SigmaHQ `r2026-01-01` + 483 SigmaHQ `r2026-04-01` delta + 193 Hayabusa + 24 Head Mare/PhantomCore + 15 APT Corax Team + ~32 misc).
+
+> **Last upstream sync:** SigmaHQ `r2026-04-01` imported 2026-05-05 via the `sigma-curator` skill (483 net-new rules, 0 hard-fails, 100% Muninn compile-pass). See `IMPORTED-r2026-04-01.md` for the manifest.
+
+## Repository layout (Domain-first)
+
+```
+sigma_rules/
+├── core/              # Domain-organized working set — point `-r` here for production
+│   ├── windows/       # 2,645 — biggest leg; includes hayabusa/ subtree
+│   ├── linux/         #   209
+│   ├── macos/         #    69
+│   ├── cloud/         #   229 — aws/azure/gcp/m365/okta/github
+│   ├── network/       #    57
+│   ├── web/           #    45
+│   ├── identity/      #    23 — okta, cisco_duo
+│   ├── application/   #    97 — productivity apps, browsers, IDEs
+│   └── category/      #     7 — antivirus, database (cross-platform logsource categories)
+├── emerging/          # 458 — CVE-year + APT-campaign rules; high-signal but time-bound
+│   └── 2010..2026/    #       organized by year, with Exploits/Malware/TA subdirs
+├── threat-hunting/    # 134 — SigmaHQ rules-threat-hunting (lower TPR, run with --threat-hunt)
+├── templates/         #   8 — starter rules for new contributions
+├── SOURCES.md         # this file
+├── CONTRIBUTING.md    # contribution guide
+├── README.md          # rules tree overview
+└── IMPORTED-*.md      # per-batch manifests of upstream imports
+```
+
+Use `-r sigma_rules/core/` for default production scans (everything except emerging-threats and threat-hunting). Use `-r sigma_rules/` for the full tree. Use `-r sigma_rules/threat-hunting/` for noisy hunt-mode rules only.
 
 ---
 
@@ -87,12 +115,13 @@ Sources ranked by impact, feasibility, and license compatibility:
 - **Effort**: LOW
 
 ### CISA Advisory Rules
-- **URL**: https://github.com/cisagov / CISA advisories
-- **Rules**: ~30 SIGMA rules in select advisories + Malcolm network rules
+- **URL**: https://github.com/cisagov / CISA advisories (per-advisory, not bulk)
+- **Rules**: ~30 SIGMA rules embedded in select advisory PDFs/READMEs
 - **Coverage**: Confirmed actively-exploited vulnerabilities
 - **License**: Public domain (US government)
-- **Format**: Native SIGMA in advisories
-- **Effort**: LOW — highest confidence when available
+- **Format**: Native SIGMA in advisories — extract manually
+- **Effort**: MEDIUM — requires per-advisory cherry-picking; no bulk source
+- **NOT in cisagov/Malcolm**: Verified May 2026 — Malcolm ships Suricata `.rules` and Arkime session-tagging YAML, **zero SIGMA-shaped rules**. Earlier listing in this file was wrong; the auto-sweep skips Malcolm.
 
 ---
 
@@ -291,3 +320,29 @@ Areas where we need the most help from the community:
 ---
 
 **Know a source we're missing? Open an [issue](https://github.com/corax-team/muninn/issues) or submit a PR to update this file.**
+
+---
+
+## Addendum — May 2026 research pass
+
+Additional sources verified beyond the priority matrix above. None replace the Tier 1 picks; recorded here so future curation passes don't re-discover them from scratch.
+
+### Worth tracking
+
+- **SigmaHQ `r2026-04-01`** (released 28 Apr 2026) — straight upgrade path from our `r2026-01-01` baseline. Quarterly cadence is reliable; treat the next four-month window as an automatic refresh task.
+- **PySigma SQLite backend** ([pysigma-backend-sqlite](https://github.com/SigmaHQ/pySigma-backend-sqlite)) — generates SQL identical in shape to Muninn's compiler output. Not a rule source itself, but an oracle: any rule that pySigma-SQLite refuses to compile is one Muninn will refuse too. Useful as a pre-screen for converted (non-native-SIGMA) sources.
+- **Zircolite-Rules** ([wagga40/Zircolite-Rules](https://github.com/wagga40/Zircolite-Rules), LGPL-2.1) — auto-generated rulesets pre-converted via the pySigma SQLite backend. Distributes JSON, not YAML, so not a drop-in YAML source — primarily a **validation reference** (does our rule shape match theirs?). The `*_pysigma.json` variants are the SQLite-tuned ones.
+- **P4T12ICK/Sigma-Rule-Repository** (GPL-3.0) — community repo with per-rule testing documentation, MITRE-organized. GPL-3.0 → AGPL-3.0 is a one-way upgrade per GPLv3 §13, so **license-compatible**. Smaller volume than Hayabusa but every rule comes with a test artifact, which is unusual.
+
+### Skip / low signal
+
+- **mbabinski/Sigma-Rules** — single-author personal repo. Quality varies; no reliable maintenance signal. Cherry-pick at most.
+- **abdulmyid-cyber/SIEM-Content** — zero-day-themed but mostly re-publishes upstream rules without provenance changes. Dedupe will eat it.
+- **renat0z3r0/notepadpp-supply-chain-iocs** and similar single-incident repos — IOC-shaped, not generic detection. Belongs in the IOC pipeline, not `sigma_rules/`.
+
+### Active community trackers (for ongoing monitoring, not bulk import)
+
+- **Florian Roth (@cyb3rops)** — frequently first-to-publish on emerging APT TTPs. RSS via medium.com/@cyb3rops.
+- **The DFIR Report** — weekly intrusion write-ups, every one ships SIGMA rules. RSS via thedfirreport.com.
+- **SigmaHQ Pull Requests** — watching the PR queue surfaces emerging rules ~2–4 weeks before release tags.
+

@@ -1,0 +1,30 @@
+title: Driver Load - MsIo32.sys
+id: 5bd5df3e-188a-5e62-8092-7ced909f5178
+status: experimental
+description: |
+    Detects loading of driver MsIo32.sys via name.
+    The MsIo64.sys and MsIo32.sys drivers in Patriot Viper RGB before 1.1 allow local users (including low integrity processes) to read and write to arbitrary memory locations, and consequently gain NT AUTHORITY\SYSTEM privileges, by mapping \Device\PhysicalMemory into the calling process via ZwOpenSection and ZwMapViewOfSection.
+references:
+    - https://www.loldrivers.io/drivers/4e5064b4-48d3-418c-a7a8-f0dc7ac0a176/
+    - https://www.activecyber.us/activelabs/viper-rgb-driver-local-privilege-escalation-cve-2019-18845
+    - http://blog.rewolf.pl/blog/?p=1630
+    - https://github.com/elastic/protections-artifacts/search?q=VulnDriver
+author: Michael Haag
+date: 2023/01/09
+modified: 2026/05/04
+tags:
+    - attack.privilege_escalation
+    - attack.t1543.003
+    - attack.t1068
+    - loldrivers.vulnerable
+logsource:
+    product: windows
+    category: driver_load
+detection:
+    selection_name:
+        ImageLoaded|endswith:
+            - '\msio32.sys'
+    condition: selection_name
+falsepositives:
+    - Unknown
+level: low

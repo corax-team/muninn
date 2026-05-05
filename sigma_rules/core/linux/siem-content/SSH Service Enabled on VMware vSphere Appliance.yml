@@ -1,0 +1,21 @@
+title: SSH Service Enabled on VMware vSphere Appliance
+id: e83dce5a-f2e0-4937-b2c5-8c9ff14998d9
+description: Detects enabling of SSH on VMware vSphere/VAMI appliances – a persistence tactic seen in BRICKSTORM campaign
+status: experimental
+author: Abdul Rahman (abdulmyid@gmail.com)
+logsource:
+  product: linux
+  service: syslog
+detection:
+  selection:
+    message|contains:
+      - "Started OpenSSH server daemon"
+      - "sshd.service: Start"
+  condition: selection
+falsepositives:
+  - Admin enabling SSH for troubleshooting
+level: high
+tags:
+  - attack.persistence
+  - attack.t1543.003
+  - threat.brickstorm

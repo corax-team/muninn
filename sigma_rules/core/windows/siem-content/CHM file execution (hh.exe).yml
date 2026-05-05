@@ -1,0 +1,39 @@
+title: CHM (hh.exe) Execution Indicative of CHM-based Infection Chain
+id: 3c2a9d4b-9f7d-4b8c-9b2a-5c1f0a9e2e77
+status: experimental
+description: Detects execution of the Windows HTML Help executable (hh.exe) used to open CHM files. Public reporting shows attackers delivering CHM inside password-protected ZIPs (opened after SVG redirect), which when launched can kick off loaders such as CountLoader. This rule flags instances of hh.exe execution with suspicious command-line characteristics and parent/child indicators.
+author: Abdul Rahman (abdulmyid@gmail.com)
+references:
+  - https://thehackernews.com/2025/09/researchers-expose-svg-and-purerat.html
+tags:
+  - attack.initial-access
+  - attack.execution
+  - attack.t1204
+logsource:
+  product: windows
+  service: sysmon
+  category: process_creation
+detection:
+  selection_hh_exec:
+    EventID: 1
+    Image|endswith: 
+      - "\\hh.exe"
+      - "\\hh.exe\""
+  selection_hh_cmdline:
+    CommandLine|re:
+      - "(?i)\\.chm"
+      - "(?i)http(s?)://.*\\.zip"
+      - "(?i)unpack"
+  # optional suspicious parent processes — CHM should normally be launched by explorer or user-initiated processes,
+  # but many automated chains show unusual parents (e.g., mshta, rundll32, or script hosts).
+  suspicious_parent:
+    ParentImage|re:
+      - "cmd\\.exe$"
+      - "powershell\\.exe$"
+      - "wscript\\.exe$"
+      - "mshta\\.exe$"
+  condition: selection_hh_exec and (selection_hh_cmdline or suspicious_parent)
+falsepositives:
+  - Users legitimately opening CHM help files for installed software or offline documentation.
+  - Tune by user context, workstation groups, and known software installations.
+level: high

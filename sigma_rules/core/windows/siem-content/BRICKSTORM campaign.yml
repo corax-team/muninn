@@ -1,0 +1,23 @@
+title: Appliance IP Authenticating to Windows Hosts
+id: b3f2a612-9e92-47c4-8898-f7a5fa7d94f5
+description: Detects authentication attempts from VMware/vSphere appliance IPs to Windows domain members – tactic reported in BRICKSTORM campaign
+status: experimental
+author: Abdul Rahman abdulmyid@gmail.com
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+    LogonType: 3
+    IpAddress|in:
+      - 10.0.0.0/24   # Replace with your vCenter/VAMI ranges
+      - 192.168.100.0/24
+  condition: selection
+falsepositives:
+  - Misconfigured backup or monitoring systems
+level: high
+tags:
+  - attack.lateral_movement
+  - attack.t1021.002
+  - threat.brickstorm

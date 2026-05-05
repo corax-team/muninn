@@ -1062,7 +1062,7 @@ cargo build --release --features "all-parsers,cli" --target x86_64-pc-windows-ms
 
 ```bash
 git clone --depth=1 https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES.git
-muninn -e EVTX-ATTACK-SAMPLES/ -r sigma_rules/windows/ --timeline --killchain --threat-score
+muninn -e EVTX-ATTACK-SAMPLES/ -r sigma_rules/core/windows/ --timeline --killchain --threat-score
 ```
 
 ## Performance

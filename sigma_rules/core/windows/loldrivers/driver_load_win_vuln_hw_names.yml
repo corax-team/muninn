@@ -1,0 +1,28 @@
+title: Driver Load - HW.sys
+id: 9e98b0a7-1945-5389-a98e-ed36177983e3
+status: experimental
+description: |
+    Detects loading of driver HW.sys via name.
+    HW - Windows NT-8 (32/64 bit) kernel mode driver for PC ports/memory/PCI access
+references:
+    - https://www.loldrivers.io/drivers/2d7c96d3-2d6c-44cd-a8a1-5239f571a24a/
+    - Internal Research
+author: Nasreddine Bencherchali
+date: 2023/05/06
+modified: 2026/05/04
+tags:
+    - attack.privilege_escalation
+    - attack.t1543.003
+    - attack.t1068
+    - loldrivers.vulnerable
+logsource:
+    product: windows
+    category: driver_load
+detection:
+    selection_name:
+        ImageLoaded|endswith:
+            - '\hw.sys'
+    condition: selection_name
+falsepositives:
+    - Unknown
+level: low

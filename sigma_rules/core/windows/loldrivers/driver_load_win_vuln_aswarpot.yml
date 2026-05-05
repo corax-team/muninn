@@ -1,0 +1,32 @@
+title: Driver Load - aswArPot.sys
+id: ae4ea55f-3270-52f2-953b-f22ae450a1b2
+status: experimental
+description: |
+    Detects loading of driver aswArPot.sys via hash.
+    Avast’s “Anti Rootkit” driver (also used by AVG) has been found to be vulnerable to two high severity attacks that could potentially lead to privilege escalation by running code in the kernel from a non-administrator user.
+references:
+    - https://www.loldrivers.io/drivers/57fc510a-e649-4599-b83e-8f3605e3d1d9/
+    - https://learn.microsoft.com/en-us/windows/security/threat-protection/windows-defender-application-control/microsoft-recommended-driver-block-rules
+    - CVE-2022-26522, CVE-2022-26523: Both of these vulnerabilities were fixed in version 22.1.
+author: Michael Haag
+date: 2023/01/09
+modified: 2026/05/04
+tags:
+    - attack.privilege_escalation
+    - attack.t1543.003
+    - attack.t1068
+    - loldrivers.vulnerable
+logsource:
+    product: windows
+    category: driver_load
+detection:
+    selection_hashes:
+        Hashes|contains:
+            - 'MD5=a179c4093d05a3e1ee73f6ff07f994aa'
+            - 'SHA1=5d6b9e80e12bfc595d4d26f6afb099b3cb471dd4'
+            - 'SHA256=4b5229b3250c8c08b98cb710d6c056144271de099a57ae09f5d2097fc41bd4f1'
+            - 'IMPHASH=3702511999371bac8982d01820dd70f2'
+    condition: selection_hashes
+falsepositives:
+    - Unknown
+level: high
