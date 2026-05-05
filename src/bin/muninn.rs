@@ -1854,7 +1854,7 @@ fn main() -> Result<()> {
         println!("\n  {:<40} {}", "Field".bold(), "Count".bold());
         println!("  {}", "─".repeat(52));
         let mut fields: Vec<_> = fc.iter().collect();
-        fields.sort_by(|a, b| b.1.cmp(a.1));
+        fields.sort_by_key(|f| std::cmp::Reverse(*f.1));
         for (name, count) in fields.iter().take(30) {
             if name.starts_with('_') {
                 continue;
@@ -1881,7 +1881,7 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|d| (d.title.as_str(), d.result.duration_ms, d.result.count))
                 .collect();
-            profile.sort_by(|a, b| b.1.cmp(&a.1));
+            profile.sort_by_key(|p| std::cmp::Reverse(p.1));
 
             println!("  {}", "Rule Performance Profile".bold().underline());
             println!(
@@ -2973,7 +2973,7 @@ fn main() -> Result<()> {
             }
         }
         let mut eid_metrics: Vec<EidMetric> = eid_map.into_values().collect();
-        eid_metrics.sort_by(|a, b| b.total.cmp(&a.total));
+        eid_metrics.sort_by_key(|e| std::cmp::Reverse(e.total));
 
         // Per-severity rollup: total = sum of counts, unique = distinct rules.
         let mut severity_rollup: std::collections::HashMap<String, SeverityRollup> =
