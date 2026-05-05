@@ -338,7 +338,7 @@ impl OpenTipClient {
         }
 
         // Sort results: Red first, then Orange, Yellow, Grey, Green
-        results.sort_by(|a, b| b.zone.rank().cmp(&a.zone.rank()));
+        results.sort_by_key(|r| std::cmp::Reverse(r.zone.rank()));
 
         results
     }

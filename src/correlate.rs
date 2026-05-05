@@ -200,7 +200,7 @@ pub fn correlate(detections: &[CorrelationTuple]) -> Vec<AttackChain> {
     }
 
     // Sort by number of events descending
-    chains.sort_by(|a, b| b.events.len().cmp(&a.events.len()));
+    chains.sort_by_key(|c| std::cmp::Reverse(c.events.len()));
     chains
 }
 

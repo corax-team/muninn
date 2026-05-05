@@ -72,28 +72,24 @@ pub fn parse(path: &Path, source_file: &str) -> Result<Vec<Event>> {
                         }
                     }
                 }
-                Ok(XmlEvent::Text(ref e)) => {
-                    if in_event {
-                        let text = e.unescape().unwrap_or_default().to_string();
-                        event_xml.push_str(&quick_xml::escape::escape(&text));
-                    }
+                Ok(XmlEvent::Text(ref e)) if in_event => {
+                    let text = e.unescape().unwrap_or_default().to_string();
+                    event_xml.push_str(&quick_xml::escape::escape(&text));
                 }
-                Ok(XmlEvent::Empty(ref e)) => {
-                    if in_event {
-                        let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                        event_xml.push('<');
-                        event_xml.push_str(&name);
-                        for a in e.attributes().flatten() {
-                            let akey = String::from_utf8_lossy(a.key.as_ref());
-                            let aval = String::from_utf8_lossy(&a.value);
-                            event_xml.push(' ');
-                            event_xml.push_str(&akey);
-                            event_xml.push_str("=\"");
-                            event_xml.push_str(&xml_escape_attr(&aval));
-                            event_xml.push('"');
-                        }
-                        event_xml.push_str("/>");
+                Ok(XmlEvent::Empty(ref e)) if in_event => {
+                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    event_xml.push('<');
+                    event_xml.push_str(&name);
+                    for a in e.attributes().flatten() {
+                        let akey = String::from_utf8_lossy(a.key.as_ref());
+                        let aval = String::from_utf8_lossy(&a.value);
+                        event_xml.push(' ');
+                        event_xml.push_str(&akey);
+                        event_xml.push_str("=\"");
+                        event_xml.push_str(&xml_escape_attr(&aval));
+                        event_xml.push('"');
                     }
+                    event_xml.push_str("/>");
                 }
                 Ok(XmlEvent::Eof) => break,
                 Err(_) => break,

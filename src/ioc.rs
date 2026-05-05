@@ -665,7 +665,7 @@ impl IocCollector {
                 }
             })
             .collect();
-        iocs.sort_by(|a, b| b.count.cmp(&a.count));
+        iocs.sort_by_key(|i| std::cmp::Reverse(i.count));
         iocs
     }
 }
@@ -753,7 +753,7 @@ pub fn extract_iocs(engine: &SearchEngine) -> Result<Vec<Ioc>> {
         })
         .collect();
 
-    iocs.sort_by(|a, b| b.count.cmp(&a.count));
+    iocs.sort_by_key(|i| std::cmp::Reverse(i.count));
     Ok(iocs)
 }
 
