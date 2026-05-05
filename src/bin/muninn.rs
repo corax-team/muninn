@@ -1175,7 +1175,9 @@ fn main() -> Result<()> {
             SearchEngine::new()?
         };
 
-        // Determine if unified SQLite engine is needed (for search/SQL/anomaly features)
+        // Determine if unified SQLite engine is needed (for search/SQL/anomaly features).
+        // `--diff` also needs it because diff_evidence calls event_count() on this engine,
+        // and a streaming-only run would leave it empty (T6 smoke-test bug: "first set: 0").
         let needs_unified_engine = cli.keyword.is_some()
             || cli.field_search.is_some()
             || cli.sql.is_some()
@@ -1189,7 +1191,8 @@ fn main() -> Result<()> {
             || cli.keepflat.is_some()
             || cli.after.is_some()
             || cli.before.is_some()
-            || cli.login_analysis.is_some();
+            || cli.login_analysis.is_some()
+            || cli.diff.is_some();
 
         // Streaming pipeline: parse + SIGMA + stats per file, free memory after each
         let do_transforms = cli.transforms;
@@ -1987,21 +1990,32 @@ fn main() -> Result<()> {
     }
 
     if let Some(ref fs) = cli.field_search {
-        if let Some((field, pattern)) = fs.split_once('=') {
-            let r = engine.search_field(field, pattern)?;
-            results.push(Detection {
-                title: format!("{}={}", field, pattern),
-                level: "medium".into(),
-                description: String::new(),
-                id: String::new(),
-                author: String::new(),
-                tags: Vec::new(),
-                result: r,
-                confidence: "high".into(),
-            });
+        // Two operators:
+        //   FIELD=PATTERN  → SQL LIKE PATTERN (analyst supplies % wildcards)
+        //   FIELD~SUBSTR   → SQL LIKE %SUBSTR% (auto-wrapped substring search)
+        // The previous build only honored `=` as exact LIKE which surprised
+        // users (`User=admin` returned 0 hits when value was `DOMAIN\admin`).
+        let (field, pattern, op_label) = if let Some((f, p)) = fs.split_once('~') {
+            (f, format!("%{}%", p), "~")
+        } else if let Some((f, p)) = fs.split_once('=') {
+            (f, p.to_string(), "=")
         } else {
-            anyhow::bail!("--field requires format FIELD=PATTERN, got: {:?}", fs);
-        }
+            anyhow::bail!(
+                "--field expects FIELD=PATTERN (SQL LIKE, use % for wildcards) or FIELD~SUBSTR (substring), got: {:?}",
+                fs
+            );
+        };
+        let r = engine.search_field(field, &pattern)?;
+        results.push(Detection {
+            title: format!("{}{}{}", field, op_label, pattern),
+            level: "medium".into(),
+            description: String::new(),
+            id: String::new(),
+            author: String::new(),
+            tags: Vec::new(),
+            result: r,
+            confidence: "high".into(),
+        });
     }
 
     if let Some(ref rs) = cli.regex_search {
@@ -2466,6 +2480,21 @@ fn main() -> Result<()> {
         // from analyses that run later (anomalies, login, summary, IOC, opentip).
     } else if !cli.stats && cli.distinct.is_none() && cli.dbfile.is_none() && !cli.quiet {
         println!("  {} No matches found.\n", "[*]".yellow());
+        // Help users who asked for SIGMA-derived analyses without supplying
+        // rules: those flags silently no-op when `results` is empty.
+        let asks_for_sigma_analysis = cli.killchain.is_some()
+            || cli.timeline.is_some()
+            || cli.correlate.is_some()
+            || cli.threat_score.is_some()
+            || cli.summary.is_some()
+            || cli.navigator.is_some();
+        if asks_for_sigma_analysis && cli.rules.is_none() {
+            println!(
+                "  {} {} but no `-r/--rules` directory was given.\n  Pass `-r <path>` (e.g. `-r sigma_rules`) or use the `--gui` meta-flag which loads defaults automatically.",
+                "[!]".yellow(),
+                "Analysis flags require SIGMA rule matches".bold()
+            );
+        }
     }
 
     // Anomaly Detection (independent of SIGMA results)

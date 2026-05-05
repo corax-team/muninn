@@ -1762,6 +1762,16 @@ pub fn enrich_urlhaus(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> 
                     raw_response: Some(raw),
                 });
             }
+            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                eprintln!(
+                    "  \u{2717} URLhaus returned Unauthorized \u{2014} verify --abuse-ch-key (free signup at https://auth.abuse.ch)"
+                );
+                break;
+            }
+            Err(ureq::Error::Status(429, _)) => {
+                eprintln!("  \u{26A0} URLhaus rate-limited (429); stopping URLhaus enrichment");
+                break;
+            }
             Err(e) => log::debug!("URLhaus request failed for {}: {}", ioc.value, e),
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
@@ -1843,6 +1853,16 @@ pub fn enrich_threatfox(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>
                     raw_response: Some(raw),
                 });
             }
+            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                eprintln!(
+                    "  \u{2717} ThreatFox returned Unauthorized \u{2014} verify --abuse-ch-key (free signup at https://auth.abuse.ch)"
+                );
+                break;
+            }
+            Err(ureq::Error::Status(429, _)) => {
+                eprintln!("  \u{26A0} ThreatFox rate-limited (429); stopping ThreatFox enrichment");
+                break;
+            }
             Err(e) => log::debug!("ThreatFox request failed for {}: {}", ioc.value, e),
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
@@ -1911,6 +1931,16 @@ pub fn enrich_malwarebazaar(iocs: &[Ioc], auth_key: &str) -> Result<Vec<Enriched
                     score: None,
                     raw_response: Some(raw),
                 });
+            }
+            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                eprintln!(
+                    "  \u{2717} MalwareBazaar returned Unauthorized \u{2014} verify --abuse-ch-key (free signup at https://auth.abuse.ch)"
+                );
+                break;
+            }
+            Err(ureq::Error::Status(429, _)) => {
+                eprintln!("  \u{26A0} MalwareBazaar rate-limited (429); stopping enrichment");
+                break;
             }
             Err(e) => log::debug!("MalwareBazaar request failed for {}: {}", ioc.value, e),
         }
@@ -1989,6 +2019,10 @@ pub fn enrich_circl_hashlookup(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
                     score: None,
                     raw_response: None,
                 });
+            }
+            Err(ureq::Error::Status(429, _)) => {
+                eprintln!("  \u{26A0} CIRCL Hashlookup rate-limited (429); stopping enrichment");
+                break;
             }
             Err(e) => log::debug!("CIRCL Hashlookup failed for {}: {}", ioc.value, e),
         }
@@ -2076,6 +2110,12 @@ pub fn enrich_cymru_mhr(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
                     score: None,
                     raw_response: Some(raw),
                 });
+            }
+            Err(ureq::Error::Status(429, _)) => {
+                eprintln!(
+                    "  \u{26A0} Cloudflare DoH rate-limited (429); stopping Cymru MHR enrichment"
+                );
+                break;
             }
             Err(e) => log::debug!("Cymru MHR (DoH) failed for {}: {}", ioc.value, e),
         }

@@ -45,8 +45,17 @@ pub fn parse(path: &Path, source_file: &str) -> Result<Vec<Event>> {
         event.set("DeviceEventClassID", event_id);
 
         let delim = if version_part.starts_with('2') && !extension.is_empty() {
+            // LEEF 2.0 layout: ...|<delim>|<key=value><delim><key=value>...
+            // The first character of `extension` is the custom delimiter; the
+            // following `|` is the structural separator that splits the delim
+            // declaration from the actual key/value payload. Skip both before
+            // handing the rest to parse_extension, otherwise the first key
+            // ends up named "|src" instead of "src".
             let d = extension.chars().next().unwrap_or('\t');
-            let ext = &extension[d.len_utf8()..];
+            let mut ext = &extension[d.len_utf8()..];
+            if let Some(stripped) = ext.strip_prefix('|') {
+                ext = stripped;
+            }
             parse_extension(&mut event, ext, d);
             d
         } else {
