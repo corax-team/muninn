@@ -1,64 +1,16 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-// Muninn bundled rules from corax-team repository (includes SigmaHQ + custom APT rules)
+/// Single source of truth for Muninn rules: our curated `sigma_rules.zip`
+/// asset attached to every release on github.com/corax-team/muninn.
+/// It already bundles a SigmaHQ snapshot, the corax-team APT additions and
+/// the 193 Hayabusa-native rules. We deliberately removed the upstream
+/// SigmaHQ-direct download paths in v0.7.5 — keeping a single distribution
+/// channel makes versioning, license attribution and false-positive
+/// curation deterministic for end users.
 const MUNINN_RULES_URL: &str =
     "https://github.com/corax-team/muninn/releases/latest/download/sigma_rules.zip";
-// SigmaHQ upstream rulesets (fallback / specific subsets)
-const SIGMA_CORE_URL: &str =
-    "https://github.com/SigmaHQ/sigma/releases/latest/download/sigma_core.zip";
-const SIGMA_CORE_PLUS_URL: &str =
-    "https://github.com/SigmaHQ/sigma/releases/latest/download/sigma_core+.zip";
-const SIGMA_ALL_URL: &str =
-    "https://github.com/SigmaHQ/sigma/releases/latest/download/sigma_all_rules.zip";
-const SIGMA_EMERGING_URL: &str =
-    "https://github.com/SigmaHQ/sigma/releases/latest/download/sigma_emerging_threats_addon.zip";
-
-#[derive(Debug, Clone, Copy)]
-pub enum RuleSet {
-    Muninn,
-    Core,
-    CorePlus,
-    All,
-    Emerging,
-}
-
-impl RuleSet {
-    pub fn from_name(name: &str) -> Result<Self> {
-        match name.to_lowercase().as_str() {
-            "muninn" | "default" => Ok(RuleSet::Muninn),
-            "core" => Ok(RuleSet::Core),
-            "core+" | "coreplus" | "core-plus" => Ok(RuleSet::CorePlus),
-            "all" => Ok(RuleSet::All),
-            "emerging" | "emerging-threats" => Ok(RuleSet::Emerging),
-            _ => bail!(
-                "Unknown ruleset: '{}'. Available: muninn (default), core, core+, all, emerging",
-                name
-            ),
-        }
-    }
-
-    pub fn url(&self) -> &'static str {
-        match self {
-            RuleSet::Muninn => MUNINN_RULES_URL,
-            RuleSet::Core => SIGMA_CORE_URL,
-            RuleSet::CorePlus => SIGMA_CORE_PLUS_URL,
-            RuleSet::All => SIGMA_ALL_URL,
-            RuleSet::Emerging => SIGMA_EMERGING_URL,
-        }
-    }
-
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            RuleSet::Muninn => "Muninn Rules (SigmaHQ + APT)",
-            RuleSet::Core => "SigmaHQ Core",
-            RuleSet::CorePlus => "SigmaHQ Core+",
-            RuleSet::All => "SigmaHQ All Rules",
-            RuleSet::Emerging => "SigmaHQ Emerging Threats",
-        }
-    }
-}
 
 pub struct DownloadResult {
     pub rules_count: usize,
@@ -66,9 +18,12 @@ pub struct DownloadResult {
     pub bytes_downloaded: usize,
 }
 
-/// Download and extract SIGMA rules from SigmaHQ GitHub releases.
-pub fn download_rules(ruleset: RuleSet, output_dir: &Path) -> Result<DownloadResult> {
-    let url = ruleset.url();
+/// Download the latest curated Muninn ruleset and extract it into
+/// `output_dir`. Existing files inside `output_dir` are kept; new rules
+/// are added and same-named ones get overwritten with the upstream
+/// version. Removed upstream rules are NOT pruned automatically.
+pub fn download_rules(output_dir: &Path) -> Result<DownloadResult> {
+    let url = MUNINN_RULES_URL;
 
     // Download zip into memory
     let resp = ureq::get(url)
@@ -133,6 +88,11 @@ pub fn download_rules(ruleset: RuleSet, output_dir: &Path) -> Result<DownloadRes
     })
 }
 
+/// Public display name kept for CLI banners — single ruleset, single name.
+pub fn display_name() -> &'static str {
+    "Muninn Rules (SigmaHQ snapshot + Corax APT + Hayabusa-native)"
+}
+
 /// Normalize zip entry paths: strip leading archive directory prefix.
 fn normalize_zip_path(path: &str) -> String {
     // SigmaHQ zips often have a top-level dir like "sigma-master/"
@@ -150,25 +110,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ruleset_from_name() {
-        assert!(matches!(RuleSet::from_name("muninn"), Ok(RuleSet::Muninn)));
-        assert!(matches!(RuleSet::from_name("default"), Ok(RuleSet::Muninn)));
-        assert!(matches!(RuleSet::from_name("core"), Ok(RuleSet::Core)));
-        assert!(matches!(RuleSet::from_name("all"), Ok(RuleSet::All)));
-        assert!(matches!(RuleSet::from_name("core+"), Ok(RuleSet::CorePlus)));
-        assert!(matches!(
-            RuleSet::from_name("emerging"),
-            Ok(RuleSet::Emerging)
-        ));
-        assert!(RuleSet::from_name("invalid").is_err());
-    }
-
-    #[test]
     fn test_normalize_zip_path() {
         assert_eq!(
             normalize_zip_path("sigma-master/rules/windows/test.yml"),
             "rules/windows/test.yml"
         );
         assert_eq!(normalize_zip_path("test.yml"), "test.yml");
+    }
+
+    #[test]
+    fn test_display_name() {
+        assert!(display_name().contains("Muninn"));
     }
 }

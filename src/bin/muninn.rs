@@ -288,7 +288,9 @@ struct Cli {
     #[cfg(feature = "download")]
     #[arg(
         long = "download-rules",
-        help = "Download SIGMA rules: muninn (default), core, core+, all, emerging"
+        default_missing_value = "muninn",
+        num_args = 0..=1,
+        help = "Download the curated Muninn ruleset (SigmaHQ snapshot + Corax APT + Hayabusa-native). Optional value 'muninn'/'default' is accepted for back-compat."
     )]
     download_rules: Option<String>,
 
@@ -431,10 +433,21 @@ fn main() -> Result<()> {
         .init();
     let mut cli = Cli::parse();
 
-    // Download rules and exit if requested
+    // Download rules and exit if requested. The CLI flag still accepts an
+    // optional argument for back-compat (`--download-rules muninn|default`)
+    // but only the Muninn ruleset is shipped now; older "core"/"all"/etc.
+    // values from the v0.7.x days resolve to the same Muninn bundle with
+    // a one-line notice so existing scripts keep working.
     #[cfg(feature = "download")]
     if let Some(ref ruleset_name) = cli.download_rules {
-        let ruleset = muninn::download::RuleSet::from_name(ruleset_name)?;
+        let lower = ruleset_name.to_lowercase();
+        if !matches!(lower.as_str(), "" | "muninn" | "default") && !cli.quiet {
+            eprintln!(
+                "  {} `--download-rules {}` is no longer supported. Falling back to the curated Muninn ruleset (SigmaHQ snapshot + Corax APT + Hayabusa-native).",
+                "[!]".yellow(),
+                ruleset_name
+            );
+        }
         let output_dir = cli
             .rules_dir
             .clone()
@@ -445,14 +458,17 @@ fn main() -> Result<()> {
             println!(
                 "  {} Downloading {} ...",
                 "▶".green().bold(),
-                ruleset.display_name()
+                muninn::download::display_name()
             );
-            println!("  {} Source: {}", "[>]".cyan(), ruleset.url());
+            println!(
+                "  {} Source: github.com/corax-team/muninn @ releases/latest",
+                "[>]".cyan()
+            );
             println!("  {} Target: {:?}", "[>]".cyan(), output_dir);
             println!();
         }
 
-        let result = muninn::download::download_rules(ruleset, &output_dir)?;
+        let result = muninn::download::download_rules(&output_dir)?;
 
         if !cli.quiet {
             println!(
