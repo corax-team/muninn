@@ -1642,6 +1642,448 @@ pub fn enrich_opentip(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
     Ok(enriched)
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Free-tier enrichers (no API key required)
+//
+// All endpoints below allow anonymous queries up to ~1000/day per source IP.
+// We cap each enricher at a reasonable per-run ceiling to stay polite and
+// to keep total request time bounded for a typical DFIR run.
+// Each function pushes one EnrichedIoc per IOC investigated, with `source`
+// identifying the feed and `verdict` ∈ {malicious, suspicious, benign,
+// unknown, error}. Failure of any single feed is non-fatal; the report
+// shows whichever results came back.
+// ───────────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "ioc-enrich")]
+const FREE_ENRICH_USER_AGENT: &str = concat!(
+    "muninn/",
+    env!("CARGO_PKG_VERSION"),
+    " (+abuse.ch+circl+cymru free-tier enrichment)"
+);
+
+#[cfg(feature = "ioc-enrich")]
+fn build_free_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(FREE_ENRICH_USER_AGENT)
+        .build()
+}
+
+/// Percent-encode arbitrary bytes for use in `application/x-www-form-urlencoded`
+/// bodies and HTTP query strings. Only ASCII alphanumerics, `-_.~` survive
+/// unmodified; everything else turns into `%HH`. Avoids pulling in a separate
+/// crate just for the few tens of values we send to free-tier IOC feeds.
+#[cfg(feature = "ioc-enrich")]
+fn pct_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        let b = *byte;
+        let safe = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~');
+        if safe {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+/// abuse.ch URLhaus — malicious URLs / hosts / payloads.
+/// Hits ~/v1/url/, ~/v1/host/, ~/v1/payload/ depending on IOC type.
+///
+/// As of 2024-Q3 abuse.ch endpoints require an `Auth-Key` header. The key
+/// itself is free (~1-minute signup at <https://auth.abuse.ch>) and we
+/// attach it on every request. Caller passes an empty string to skip the
+/// feed entirely.
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_urlhaus(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> {
+    if auth_key.is_empty() {
+        return Ok(Vec::new());
+    }
+    let agent = build_free_agent();
+    let mut out = Vec::new();
+    for ioc in iocs.iter().take(100) {
+        let (endpoint, key) = match ioc.ioc_type {
+            IocType::Url => ("https://urlhaus-api.abuse.ch/v1/url/", "url"),
+            IocType::Domain | IocType::Ipv4 => ("https://urlhaus-api.abuse.ch/v1/host/", "host"),
+            IocType::Sha256 | IocType::Md5 => {
+                ("https://urlhaus-api.abuse.ch/v1/payload/", "sha256_hash")
+            }
+            _ => continue,
+        };
+        let body = format!("{}={}", key, pct_encode(&ioc.value));
+        match agent
+            .post(endpoint)
+            .set("Content-Type", "application/x-www-form-urlencoded")
+            .set("Auth-Key", auth_key)
+            .send_string(&body)
+        {
+            Ok(resp) => {
+                let raw = resp.into_string().unwrap_or_default();
+                let json: serde_json::Value =
+                    serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                let status = json
+                    .get("query_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let (verdict, details) = match status {
+                    "ok" => {
+                        let threat = json
+                            .get("threat")
+                            .or_else(|| json.get("url_status"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("malicious");
+                        let tags = json
+                            .get("tags")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|t| t.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        let detail = if tags.is_empty() {
+                            format!("URLhaus: {}", threat)
+                        } else {
+                            format!("URLhaus: {} [{}]", threat, tags)
+                        };
+                        ("malicious".to_string(), detail)
+                    }
+                    "no_results" => ("benign".to_string(), "URLhaus: no record".to_string()),
+                    other => ("unknown".to_string(), format!("URLhaus: {other}")),
+                };
+                out.push(EnrichedIoc {
+                    ioc: ioc.clone(),
+                    verdict,
+                    source: "URLhaus".into(),
+                    details,
+                    score: None,
+                    raw_response: Some(raw),
+                });
+            }
+            Err(e) => log::debug!("URLhaus request failed for {}: {}", ioc.value, e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    Ok(out)
+}
+
+/// abuse.ch ThreatFox — generic IOC search across domains, IPs, URLs and hashes.
+/// Requires an `Auth-Key` (free, see [`enrich_urlhaus`] for details).
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_threatfox(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> {
+    if auth_key.is_empty() {
+        return Ok(Vec::new());
+    }
+    let agent = build_free_agent();
+    let mut out = Vec::new();
+    for ioc in iocs.iter().take(100) {
+        if !matches!(
+            ioc.ioc_type,
+            IocType::Ipv4
+                | IocType::Domain
+                | IocType::Url
+                | IocType::Md5
+                | IocType::Sha1
+                | IocType::Sha256
+        ) {
+            continue;
+        }
+        let body = serde_json::json!({"query": "search_ioc", "search_term": ioc.value}).to_string();
+        match agent
+            .post("https://threatfox-api.abuse.ch/api/v1/")
+            .set("Content-Type", "application/json")
+            .set("Auth-Key", auth_key)
+            .send_string(&body)
+        {
+            Ok(resp) => {
+                let raw = resp.into_string().unwrap_or_default();
+                let json: serde_json::Value =
+                    serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                let status = json
+                    .get("query_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let (verdict, details, score) = match status {
+                    "ok" => {
+                        let data = json.get("data").and_then(|v| v.as_array());
+                        let entry = data.and_then(|a| a.first());
+                        let malware = entry
+                            .and_then(|e| e.get("malware"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let threat_type = entry
+                            .and_then(|e| e.get("threat_type"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let confidence = entry
+                            .and_then(|e| e.get("confidence_level"))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        (
+                            "malicious".to_string(),
+                            format!("ThreatFox: {} ({})", malware, threat_type),
+                            Some(confidence),
+                        )
+                    }
+                    "no_result" | "illegal_search_term" => (
+                        "benign".to_string(),
+                        "ThreatFox: no record".to_string(),
+                        None,
+                    ),
+                    other => ("unknown".to_string(), format!("ThreatFox: {other}"), None),
+                };
+                out.push(EnrichedIoc {
+                    ioc: ioc.clone(),
+                    verdict,
+                    source: "ThreatFox".into(),
+                    details,
+                    score,
+                    raw_response: Some(raw),
+                });
+            }
+            Err(e) => log::debug!("ThreatFox request failed for {}: {}", ioc.value, e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    Ok(out)
+}
+
+/// abuse.ch MalwareBazaar — file-hash lookup with malware family attribution.
+/// Requires an `Auth-Key` (free, see [`enrich_urlhaus`] for details).
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_malwarebazaar(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> {
+    if auth_key.is_empty() {
+        return Ok(Vec::new());
+    }
+    let agent = build_free_agent();
+    let mut out = Vec::new();
+    for ioc in iocs.iter().take(100) {
+        if !matches!(ioc.ioc_type, IocType::Md5 | IocType::Sha1 | IocType::Sha256) {
+            continue;
+        }
+        let body = format!("query=get_info&hash={}", pct_encode(&ioc.value));
+        match agent
+            .post("https://mb-api.abuse.ch/api/v1/")
+            .set("Content-Type", "application/x-www-form-urlencoded")
+            .set("Auth-Key", auth_key)
+            .send_string(&body)
+        {
+            Ok(resp) => {
+                let raw = resp.into_string().unwrap_or_default();
+                let json: serde_json::Value =
+                    serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                let status = json
+                    .get("query_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let (verdict, details) = match status {
+                    "ok" => {
+                        let entry = json
+                            .get("data")
+                            .and_then(|v| v.as_array())
+                            .and_then(|a| a.first());
+                        let signature = entry
+                            .and_then(|e| e.get("signature"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("malware");
+                        let file_type = entry
+                            .and_then(|e| e.get("file_type"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        (
+                            "malicious".to_string(),
+                            format!("MalwareBazaar: {} ({})", signature, file_type),
+                        )
+                    }
+                    "hash_not_found" => (
+                        "unknown".to_string(),
+                        "MalwareBazaar: hash unknown".to_string(),
+                    ),
+                    other => ("unknown".to_string(), format!("MalwareBazaar: {other}")),
+                };
+                out.push(EnrichedIoc {
+                    ioc: ioc.clone(),
+                    verdict,
+                    source: "MalwareBazaar".into(),
+                    details,
+                    score: None,
+                    raw_response: Some(raw),
+                });
+            }
+            Err(e) => log::debug!("MalwareBazaar request failed for {}: {}", ioc.value, e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    Ok(out)
+}
+
+/// CIRCL Hashlookup — NSRL known-good database plus malware reputation.
+/// 200 → entry exists (benign or malicious depending on `KnownMalicious`).
+/// 404 → unknown to the dataset.
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_circl_hashlookup(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
+    let agent = build_free_agent();
+    let mut out = Vec::new();
+    for ioc in iocs.iter().take(150) {
+        let (kind, hash) = match ioc.ioc_type {
+            IocType::Md5 => ("md5", ioc.value.as_str()),
+            IocType::Sha1 => ("sha1", ioc.value.as_str()),
+            IocType::Sha256 => ("sha256", ioc.value.as_str()),
+            _ => continue,
+        };
+        let endpoint = format!("https://hashlookup.circl.lu/lookup/{}/{}", kind, hash);
+        match agent
+            .get(&endpoint)
+            .set("Accept", "application/json")
+            .call()
+        {
+            Ok(resp) => {
+                let raw = resp.into_string().unwrap_or_default();
+                let json: serde_json::Value =
+                    serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                let known_malicious = json
+                    .get("KnownMalicious")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                let trust = json
+                    .get("hashlookup:trust")
+                    .or_else(|| json.get("trust"))
+                    .and_then(|v| v.as_f64());
+                let file_name = json
+                    .get("FileName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("known file");
+                let (verdict, details) = if known_malicious {
+                    (
+                        "malicious".to_string(),
+                        format!("CIRCL Hashlookup: KnownMalicious ({})", file_name),
+                    )
+                } else {
+                    (
+                        "benign".to_string(),
+                        format!(
+                            "CIRCL Hashlookup: NSRL known-good ({}, trust={:.0})",
+                            file_name,
+                            trust.unwrap_or(0.0)
+                        ),
+                    )
+                };
+                out.push(EnrichedIoc {
+                    ioc: ioc.clone(),
+                    verdict,
+                    source: "CIRCL Hashlookup".into(),
+                    details,
+                    score: trust,
+                    raw_response: Some(raw),
+                });
+            }
+            Err(ureq::Error::Status(404, _)) => {
+                out.push(EnrichedIoc {
+                    ioc: ioc.clone(),
+                    verdict: "unknown".into(),
+                    source: "CIRCL Hashlookup".into(),
+                    details: "Not found in NSRL or malware sets".into(),
+                    score: None,
+                    raw_response: None,
+                });
+            }
+            Err(e) => log::debug!("CIRCL Hashlookup failed for {}: {}", ioc.value, e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+    Ok(out)
+}
+
+/// Team Cymru Malware Hash Registry via Cloudflare DNS-over-HTTPS.
+/// Asks for a TXT record at `<sha1|md5>.malware.hash.cymru.com`. A response
+/// of "1395610922 79" means: last seen at unix-time 1395610922, and 79 % of
+/// VT engines flagged the sample. NXDOMAIN means the hash is unknown.
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_cymru_mhr(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
+    let agent = build_free_agent();
+    let mut out = Vec::new();
+    for ioc in iocs.iter().take(200) {
+        let hash = match ioc.ioc_type {
+            IocType::Md5 | IocType::Sha1 => ioc.value.as_str(),
+            _ => continue,
+        };
+        let qname = format!("{}.malware.hash.cymru.com", hash);
+        let endpoint = format!(
+            "https://cloudflare-dns.com/dns-query?name={}&type=TXT",
+            pct_encode(&qname)
+        );
+        match agent
+            .get(&endpoint)
+            .set("Accept", "application/dns-json")
+            .call()
+        {
+            Ok(resp) => {
+                let raw = resp.into_string().unwrap_or_default();
+                let json: serde_json::Value =
+                    serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
+                let status = json.get("Status").and_then(|v| v.as_i64()).unwrap_or(-1);
+                if status == 3 {
+                    out.push(EnrichedIoc {
+                        ioc: ioc.clone(),
+                        verdict: "unknown".into(),
+                        source: "Cymru MHR".into(),
+                        details: "MHR: NXDOMAIN (hash unknown)".into(),
+                        score: None,
+                        raw_response: None,
+                    });
+                    continue;
+                }
+                if let Some(answer) = json.get("Answer").and_then(|v| v.as_array()) {
+                    if let Some(data) = answer
+                        .first()
+                        .and_then(|a| a.get("data"))
+                        .and_then(|v| v.as_str())
+                    {
+                        // Strip surrounding quotes Cloudflare adds for TXT data.
+                        let trimmed = data.trim_matches('"');
+                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                        let detection_rate = parts.get(1).and_then(|s| s.parse::<f64>().ok());
+                        let last_seen = parts.first().copied().unwrap_or("");
+                        let verdict = match detection_rate {
+                            Some(r) if r >= 50.0 => "malicious",
+                            Some(r) if r > 0.0 => "suspicious",
+                            _ => "unknown",
+                        };
+                        out.push(EnrichedIoc {
+                            ioc: ioc.clone(),
+                            verdict: verdict.into(),
+                            source: "Cymru MHR".into(),
+                            details: format!(
+                                "MHR: {}% AV detection, last seen unix={}",
+                                detection_rate.unwrap_or(0.0),
+                                last_seen
+                            ),
+                            score: detection_rate,
+                            raw_response: Some(raw),
+                        });
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                        continue;
+                    }
+                }
+                out.push(EnrichedIoc {
+                    ioc: ioc.clone(),
+                    verdict: "unknown".into(),
+                    source: "Cymru MHR".into(),
+                    details: "MHR: no TXT data".into(),
+                    score: None,
+                    raw_response: Some(raw),
+                });
+            }
+            Err(e) => log::debug!("Cymru MHR (DoH) failed for {}: {}", ioc.value, e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    Ok(out)
+}
+
 pub fn render_enriched(enriched: &[EnrichedIoc]) -> String {
     if enriched.is_empty() {
         return "  No enrichment results.\n".into();

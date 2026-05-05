@@ -225,7 +225,15 @@ muninn -e ./evidence/ --anomalies anomalies.html               # save as HTML
 muninn -e ./evidence/ --ioc-extract                            # console + auto-save .txt
 muninn -e ./evidence/ --ioc-extract iocs.html                  # save as HTML
 
-# IOC enrichment with threat intelligence
+# IOC enrichment — registration-free feeds (CIRCL Hashlookup + Team Cymru MHR)
+muninn -e ./evidence/ --ioc-extract --enrich-free
+
+# IOC enrichment via abuse.ch family (URLhaus, ThreatFox, MalwareBazaar)
+# Key is free but requires 1-min signup at https://auth.abuse.ch
+muninn -e ./evidence/ --ioc-extract --abuse-ch-key YOUR_ABUSE_CH_KEY
+ABUSE_CH_KEY=... muninn -e ./evidence/ --ioc-extract --abuse-ch-key
+
+# IOC enrichment via paid / registered services
 muninn -e ./evidence/ --ioc-extract --vt-key YOUR_VT_KEY
 muninn -e ./evidence/ --ioc-extract --abuseipdb-key YOUR_ABUSEIPDB_KEY
 muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_OPENTIP_KEY
@@ -444,7 +452,9 @@ muninn --config muninn.yaml
 | **Attack timeline** | `--timeline [FILE]` | Chronological attack timeline |
 | **Anomaly detection** | `--anomalies [FILE]` | Rare processes, off-hours logons, unusual parent-child, brute force detection, command obfuscation scoring |
 | **IOC extraction** | `--ioc-extract [FILE]` | Extract IPs, domains, URLs, hashes, emails, file paths, registry keys, services, tasks, pipes |
-| **IOC enrichment** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP (basic enrichment) |
+| **IOC enrichment (free, no signup)** | `--enrich-free` | CIRCL Hashlookup (NSRL + reputation), Team Cymru MHR (DoH-based hash registry) |
+| **IOC enrichment (free, 1-min signup)** | `--abuse-ch-key` / `ABUSE_CH_KEY=…` | abuse.ch URLhaus + ThreatFox + MalwareBazaar |
+| **IOC enrichment (paid)** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP |
 | **OpenTIP deep check** | `--opentip-check <KEY>` | Comprehensive Kaspersky OpenTIP analysis with full report (TXT + HTML + JSON), parallel requests |
 | **OpenTIP type filter** | `--opentip-types hash,ip,domain,url` | Check only specific IOC types (default: all) |
 | **Login analysis** | `--login-analysis [FILE]` | Authentication analysis: success/fail ratio, brute force, unusual hours, lateral movement, privilege escalation |

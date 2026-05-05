@@ -536,14 +536,71 @@ function initIocs() {
       types.slice(0,8).map(t => [t, fmtCount(byType[t].length), ''])
     ).map(c => '<div class="card ' + c[2] + '"><div class="value">' + c[1] + '</div><div class="label">' + c[0] + '</div></div>').join('')
   );
+  // OpenTIP zone verdicts (Kaspersky) — keyed by IOC value.
   const opentip = DATA.opentip || [];
   const otByValue = {};
   opentip.forEach(o => { otByValue[o.value] = o; });
+  // Free-tier feed verdicts (URLhaus, ThreatFox, MalwareBazaar, CIRCL,
+  // Cymru MHR). Each IOC may have multiple entries — group by value.
+  const enriched = DATA.enriched_iocs || [];
+  const enrByValue = {};
+  enriched.forEach(e => {
+    const v = (e.ioc && e.ioc.value) || '';
+    if (!v) return;
+    (enrByValue[v] = enrByValue[v] || []).push(e);
+  });
+
+  // Verdict aggregation: any "malicious" wins; else "suspicious"; else benign.
+  function aggregateVerdicts(value) {
+    const results = enrByValue[value] || [];
+    if (results.length === 0) return null;
+    let worst = 'benign';
+    const sources = [];
+    for (const r of results) {
+      sources.push(String(r.source) + ': ' + String(r.verdict));
+      if (r.verdict === 'malicious') worst = 'malicious';
+      else if (r.verdict === 'suspicious' && worst !== 'malicious') worst = 'suspicious';
+      else if (r.verdict === 'unknown' && worst === 'benign') worst = 'unknown';
+    }
+    return { worst: worst, sources: sources };
+  }
+
+  // Top-level summary cards: how many IOCs got flagged across feeds.
+  let maliciousCount = 0, suspCount = 0, benignCount = 0;
+  Object.keys(enrByValue).forEach(v => {
+    const agg = aggregateVerdicts(v);
+    if (!agg) return;
+    if (agg.worst === 'malicious') maliciousCount++;
+    else if (agg.worst === 'suspicious') suspCount++;
+    else if (agg.worst === 'benign') benignCount++;
+  });
+  if (maliciousCount + suspCount + benignCount > 0) {
+    const enrCards = [
+      ['Malicious (free feeds)', maliciousCount, 'critical'],
+      ['Suspicious', suspCount, 'medium'],
+      ['Benign / NSRL known-good', benignCount, 'low'],
+    ].map(c => '<div class="card ' + c[2] + '"><div class="value">' + c[1] + '</div><div class="label">' + c[0] + '</div></div>').join('');
+    document.getElementById('iocCards').insertAdjacentHTML('afterend',
+      '<div class="cards" id="iocEnrichCards" style="margin-bottom:18px">' + enrCards + '</div>');
+  }
+
   const panels = types.map(t => {
     const rows = byType[t].slice(0, 1000).map(i => {
       const ot = otByValue[i.value];
-      const zoneBadge = ot ? '<span class="zone zone-' + String(ot.zone).toLowerCase() + '">' + String(ot.zone).toUpperCase() + '</span>' : '';
-      return '<tr><td>' + escHtml(i.value) + '</td><td>' + i.count + '</td><td>' + zoneBadge + '</td><td>' + escHtml((i.source_fields||[]).slice(0,3).join(', ')) + '</td></tr>';
+      const zoneBadge = ot
+        ? '<span class="zone zone-' + String(ot.zone).toLowerCase() + '">' + String(ot.zone).toUpperCase() + '</span>'
+        : '';
+      const agg = aggregateVerdicts(i.value);
+      let verdictBadges = '';
+      if (agg) {
+        const cls = agg.worst === 'malicious' ? 'zone-red'
+                  : agg.worst === 'suspicious' ? 'zone-orange'
+                  : agg.worst === 'benign' ? 'zone-green'
+                  : 'zone-grey';
+        const tooltip = agg.sources.join(' | ');
+        verdictBadges = ' <span class="zone ' + cls + '" title="' + escHtml(tooltip) + '">' + agg.worst.toUpperCase() + '</span>';
+      }
+      return '<tr><td>' + escHtml(i.value) + '</td><td>' + i.count + '</td><td>' + zoneBadge + verdictBadges + '</td><td>' + escHtml((i.source_fields||[]).slice(0,3).join(', ')) + '</td></tr>';
     }).join('');
     const moreNote = byType[t].length > 1000 ? '<p class="empty">Showing first 1000 of ' + byType[t].length + '; full list in muninn_iocs_*.csv.</p>' : '';
     return '<div class="dash-card"><h3>' + escHtml(t) + ' <span class="muted">(' + byType[t].length + ')</span></h3>' +

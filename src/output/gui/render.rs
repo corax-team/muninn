@@ -307,10 +307,16 @@ fn build_data_json(ctx: &GuiReportContext) -> Result<String> {
     );
     root.insert("iocs".into(), serde_json::to_value(&ctx.iocs)?);
     #[cfg(feature = "ioc-enrich")]
-    root.insert(
-        "opentip".into(),
-        serde_json::to_value(&ctx.opentip_results)?,
-    );
+    {
+        root.insert(
+            "opentip".into(),
+            serde_json::to_value(&ctx.opentip_results)?,
+        );
+        root.insert(
+            "enriched_iocs".into(),
+            serde_json::to_value(&ctx.enriched_iocs)?,
+        );
+    }
     root.insert("scores".into(), serde_json::to_value(&ctx.scores)?);
     root.insert("chains".into(), serde_json::to_value(&ctx.chains)?);
     root.insert("timeline".into(), serde_json::to_value(&ctx.timeline)?);

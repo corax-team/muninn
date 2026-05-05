@@ -225,6 +225,20 @@ struct Cli {
     )]
     opentip_key: Option<String>,
 
+    /// Enable IOC-enrichment feeds that require zero registration:
+    /// CIRCL Hashlookup (NSRL + reputation, hashes) and Team Cymru MHR
+    /// via DoH (DNS-based malware-hash registry). Run together with
+    /// --ioc-extract.
+    #[arg(long = "enrich-free")]
+    enrich_free: bool,
+
+    /// abuse.ch family API key (URLhaus / ThreatFox / MalwareBazaar). The
+    /// key is free but requires a 1-minute signup at <https://auth.abuse.ch>.
+    /// Adds malware-family attribution and threat-feed verdicts on top of
+    /// --enrich-free. Pass via env: `ABUSE_CH_KEY=... muninn ...`.
+    #[arg(long = "abuse-ch-key", env = "ABUSE_CH_KEY")]
+    abuse_ch_key: Option<String>,
+
     #[cfg(feature = "ioc-enrich")]
     #[arg(
         long = "opentip-check",
@@ -2021,6 +2035,8 @@ fn main() -> Result<()> {
     let mut gui_timeline_vec: Vec<muninn::timeline::TimelineEntry> = Vec::new();
     #[cfg(feature = "ioc-enrich")]
     let mut gui_opentip_results: Vec<muninn::opentip::OpenTipResult> = Vec::new();
+    #[cfg(feature = "ioc-enrich")]
+    let mut gui_enriched_iocs: Vec<muninn::ioc::EnrichedIoc> = Vec::new();
 
     if !results.is_empty() {
         results.sort_by(|a, b| {
@@ -2658,9 +2674,74 @@ fn main() -> Result<()> {
                 }
             }
 
-            if !all_enriched.is_empty() && !cli.quiet {
-                let output = muninn::ioc::render_enriched(&all_enriched);
-                print!("{}", output);
+            // Registration-free feeds (no API key, no signup): CIRCL
+            // Hashlookup and Team Cymru MHR (via DoH). These give reputation
+            // verdicts on hashes without any external account.
+            type KeylessFeed =
+                fn(&[muninn::ioc::Ioc]) -> anyhow::Result<Vec<muninn::ioc::EnrichedIoc>>;
+            type KeyedFeed =
+                fn(&[muninn::ioc::Ioc], &str) -> anyhow::Result<Vec<muninn::ioc::EnrichedIoc>>;
+            if cli.enrich_free {
+                let keyless_feeds: &[(&str, KeylessFeed)] = &[
+                    ("CIRCL Hashlookup", muninn::ioc::enrich_circl_hashlookup),
+                    ("Team Cymru MHR (DoH)", muninn::ioc::enrich_cymru_mhr),
+                ];
+                for (display, func) in keyless_feeds {
+                    if !cli.quiet {
+                        println!("  {} Enriching IOCs via {}...", "▶".cyan(), display);
+                    }
+                    match func(&iocs) {
+                        Ok(enriched) => all_enriched.extend(enriched),
+                        Err(e) => {
+                            if !cli.quiet {
+                                eprintln!("  {} {} failed: {}", "✗".red(), display, e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // abuse.ch family — URLhaus, ThreatFox, MalwareBazaar. Free key
+            // but requires a 1-minute signup (https://auth.abuse.ch).
+            if let Some(ref ach_key) = cli.abuse_ch_key {
+                let abuse_feeds: &[(&str, KeyedFeed)] = &[
+                    ("abuse.ch URLhaus", muninn::ioc::enrich_urlhaus),
+                    ("abuse.ch ThreatFox", muninn::ioc::enrich_threatfox),
+                    ("abuse.ch MalwareBazaar", muninn::ioc::enrich_malwarebazaar),
+                ];
+                for (display, func) in abuse_feeds {
+                    if !cli.quiet {
+                        println!("  {} Enriching IOCs via {}...", "▶".cyan(), display);
+                    }
+                    match func(&iocs, ach_key) {
+                        Ok(enriched) => all_enriched.extend(enriched),
+                        Err(e) => {
+                            if !cli.quiet {
+                                eprintln!("  {} {} failed: {}", "✗".red(), display, e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !all_enriched.is_empty() {
+                if !cli.quiet {
+                    let output = muninn::ioc::render_enriched(&all_enriched);
+                    print!("{}", output);
+                }
+                // Persist enriched verdicts next to iocs.txt/.csv. The HTML
+                // report picks them up via the gui_opentip_results channel
+                // for now, but the standalone JSON helps grepping/jq use.
+                let enriched_json = ioc_path.with_extension("enriched.json");
+                if let Ok(json) = serde_json::to_string_pretty(&all_enriched) {
+                    let _ = std::fs::write(&enriched_json, json);
+                    if !cli.quiet {
+                        println!("  {} Enrichment results → {:?}", "✓".green(), enriched_json);
+                    }
+                }
+                if is_gui {
+                    gui_enriched_iocs = all_enriched;
+                }
             }
         }
 
@@ -3096,6 +3177,7 @@ fn main() -> Result<()> {
         #[cfg(feature = "ioc-enrich")]
         {
             ctx.opentip_results = std::mem::take(&mut gui_opentip_results);
+            ctx.enriched_iocs = std::mem::take(&mut gui_enriched_iocs);
         }
 
         let html = muninn::output::gui::generate_html_report(&ctx)?;
