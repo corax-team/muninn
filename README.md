@@ -26,7 +26,7 @@
 
 ## Overview
 
-Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3,273 SIGMA rules, 377 MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
+Muninn is a standalone incident response and forensic log analysis tool. One binary, 15+ log formats, 3,498 SIGMA rules (3,297 SigmaHQ + Corax APT + 193 Hayabusa-native), 377 MITRE ATT&CK techniques, login analysis, anomaly detection, attack correlation, Kaspersky OpenTIP integration, automated compromise assessment, evidence integrity (SHA-256), and real-time monitoring — zero external dependencies. No SIEM required.
 
 Feed it a directory of logs — Muninn auto-detects the format, loads events into a SQLite database, and runs analysis. Save results to a persistent database with `--dbfile` and come back anytime: apply new SIGMA rules, run SQL queries, check IOCs — without re-parsing source files.
 
@@ -1087,7 +1087,7 @@ SIGMA rules in `sigma_rules/` licensed under [DRL 1.1](https://github.com/SigmaH
 
 ## Обзор
 
-Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3273 SIGMA-правила, 377 техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
+Muninn — инструмент для расследования инцидентов и анализа логов. Один бинарник, 15+ форматов, 3498 SIGMA-правил (3297 SigmaHQ + Corax APT + 193 Hayabusa-native), 377 техник MITRE ATT&CK, анализ аутентификации, детекция аномалий, корреляция атак, проверка IOC через Kaspersky OpenTIP, оценка компрометации и мониторинг в реальном времени. SIEM не нужен.
 
 Укажите директорию с логами — Muninn сам определит формат, загрузит события в SQLite и выполнит анализ. Результаты можно сохранить в базу и возвращаться к ним сколько угодно: прогонять новые SIGMA-правила, делать SQL-запросы, проверять индикаторы — без повторного парсинга.
 
