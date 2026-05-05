@@ -200,3 +200,136 @@ fn test_multi_format_directory() {
     let r = engine.search_keyword("root").unwrap();
     assert_eq!(r.count, 1);
 }
+
+#[cfg(feature = "cli")]
+mod gui_report_tests {
+    use muninn::output::gui::{
+        ComputerMetric, DetectionFull, EidMetric, GuiReportContext, ScanParams,
+    };
+    use std::collections::HashMap;
+
+    fn scan() -> ScanParams {
+        ScanParams {
+            muninn_version: "test",
+            command_line: "muninn --gui /tmp/x.html".into(),
+            run_timestamp: "2026-05-05T00:00:00Z".into(),
+            workers: 4,
+            duration_sec: 1.5,
+            files_scanned: 3,
+            source_files: Vec::new(),
+            total_events: 1000,
+            events_with_hits: 50,
+            reduction_pct: 95.0,
+            first_event_ts: Some("2026-05-05T00:00:00Z".into()),
+            last_event_ts: Some("2026-05-05T01:00:00Z".into()),
+            min_level: "low".into(),
+            use_cdn: true,
+        }
+    }
+
+    #[test]
+    fn empty_context_renders_dashboard_only() {
+        let ctx = GuiReportContext::new(scan());
+        let html = muninn::output::gui::generate_html_report(&ctx).unwrap();
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("MUNINN"));
+        assert!(html.contains("sec-dashboard"));
+        // Other section divs are not emitted when their data is empty.
+        assert!(!html.contains("sec-detections"));
+        assert!(!html.contains("sec-login"));
+        assert!(!html.contains("sec-iocs"));
+    }
+
+    #[test]
+    fn drill_down_includes_every_event_no_cap() {
+        let mut event = HashMap::new();
+        event.insert("EventID".into(), "4624".into());
+        event.insert("Computer".into(), "TARGET01".into());
+        let mut ctx = GuiReportContext::new(scan());
+        ctx.detections.push(DetectionFull {
+            title: "Big drill".into(),
+            level: "high".into(),
+            confidence: "high".into(),
+            count: 1234,
+            description: "test".into(),
+            id: "rule-bigdrill".into(),
+            author: "muninn".into(),
+            tags: vec!["attack.execution".into()],
+            mitre_techniques: vec!["T1059".into()],
+            mitre_tactics: vec!["execution".into()],
+            events: (0..1234).map(|_| event.clone()).collect(),
+        });
+        let html = muninn::output::gui::generate_html_report(&ctx).unwrap();
+        // Each event carries Computer:"TARGET01" — count must equal 1234.
+        let n = html.matches("\"Computer\":\"TARGET01\"").count();
+        assert_eq!(
+            n, 1234,
+            "drill-down must inline every matched event without capping"
+        );
+    }
+
+    #[test]
+    fn all_present_sections_appear_in_nav_and_content() {
+        let mut ctx = GuiReportContext::new(scan());
+        let mut ev = HashMap::new();
+        ev.insert("EventID".into(), "1".into());
+        ctx.detections.push(DetectionFull {
+            title: "test".into(),
+            level: "high".into(),
+            confidence: "high".into(),
+            count: 1,
+            description: "t".into(),
+            id: "x".into(),
+            author: "a".into(),
+            tags: vec![],
+            mitre_techniques: vec![],
+            mitre_tactics: vec![],
+            events: vec![ev],
+        });
+        ctx.computer_metrics.push(ComputerMetric {
+            computer: "C1".into(),
+            total_events_seen: 1,
+            unique_detections: 1,
+            critical: 0,
+            high: 1,
+            medium: 0,
+            low: 0,
+            informational: 0,
+        });
+        ctx.eid_metrics.push(EidMetric {
+            event_id: "1".into(),
+            channel: "Sec".into(),
+            total: 1,
+            with_detection: 1,
+        });
+        let html = muninn::output::gui::generate_html_report(&ctx).unwrap();
+        for id in [
+            "dashboard",
+            "detections",
+            "timeline",
+            "mitre",
+            "hosts",
+            "eids",
+        ] {
+            let nav = format!("data-tab=\"{id}\"");
+            assert!(
+                html.contains(&nav),
+                "expected nav tab for {id} to be present"
+            );
+            let sec = format!("id=\"sec-{id}\"");
+            assert!(
+                html.contains(&sec),
+                "expected section div for {id} to be present"
+            );
+        }
+    }
+
+    #[test]
+    fn html_is_valid_when_only_a_tab_with_no_data_is_present() {
+        // Login is None, so its tab + section must be absent.
+        let ctx = GuiReportContext::new(scan());
+        let html = muninn::output::gui::generate_html_report(&ctx).unwrap();
+        assert!(!html.contains("data-tab=\"login\""));
+        assert!(!html.contains("id=\"sec-login\""));
+    }
+}

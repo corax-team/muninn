@@ -505,22 +505,34 @@ muninn --config muninn.yaml
 
 ### Interactive HTML Report (`--gui`)
 
-Generate a self-contained HTML report with `--gui report.html`:
+`--gui` is a **meta-flag** for express forensic analysis: a single command runs every analysis Muninn supports and aggregates the results into one self-contained HTML dashboard.
 
 ```bash
 muninn -e evidence/ -r sigma-rules/ --gui report.html
 ```
 
-The report includes four interactive views:
+This single command auto-enables `--transforms`, `--anomalies`, `--ioc-extract`, `--login-analysis`, `--summary`, `--timeline`, `--correlate`, `--killchain`, `--threat-score` and `--hunt`. The text-format outputs of each analysis are saved alongside `report.html` (`muninn_logins_*.txt`, `muninn_summary_*.txt`, etc.); the HTML aggregates everything into one dashboard.
 
-| View | Description |
+OpenTIP enrichment is **not** auto-enabled — pass `--opentip-check <KEY>` separately to include zone verdicts in the IOCs tab.
+
+The report has up to 11 tabs (each shown only when its data is non-empty):
+
+| Tab | Description |
 |------|-------------|
-| **Dashboard** | Summary cards (files, events, detections by severity), severity distribution bar, top-10 detections list |
-| **Timeline** | MITRE ATT&CK swim-lane timeline — tactics as rows, detections on time axis, color-coded by severity. Zoom, pan, click to inspect events |
-| **Detections** | Searchable table with severity/tactic filters, technique badges, click-to-expand event viewer with full field details |
-| **MITRE ATT&CK** | 14-column heatmap matrix — technique cells colored by detection count, hover for rule names |
+| **Verdict banner** | Top of page, color-coded: Clean / Suspicious / Likely Compromised / Confirmed Breach + risk score |
+| **Dashboard** | Cards (files, total events, events with hits, % reduction, rules matched, severity Total \| Unique pairs), severity bar, top detections / hosts / event IDs, recommendations |
+| **Detections** | DataTables with severity + tactic filters, MITRE techniques, author column, click-to-expand drill-down. **All matched events inline, no cap** |
+| **Timeline** | vis-timeline swim-lanes by ATT&CK tactic |
+| **MITRE ATT&CK** | 14-column heatmap matrix with hover rule list |
+| **Hosts** | Computer metrics — events seen, unique rules, severity breakdown |
+| **Event IDs** | Hayabusa-style EID frequency table |
+| **Logon** | 4624/4625/4672 brute-force, lateral movement, privilege escalation, unusual hours, top sources/users |
+| **Anomalies** | Statistical anomalies with score and evidence drill-down |
+| **Hunt** | Runtime detection transforms grouped by transform name |
+| **IOCs** | Per-type panels with OpenTIP zone badges (Red/Orange/Yellow/Green/Grey) when enrichment ran |
+| **Chains** | Correlated attack chains as collapsible per-entity timelines |
 
-All data is embedded inline — no server needed, works offline. Dark Norse/Corax theme.
+All data is embedded inline — works offline once external CSS/JS is cached. Cross-platform (Linux + Windows). Dark Norse/Corax theme.
 
 ## Example Output
 

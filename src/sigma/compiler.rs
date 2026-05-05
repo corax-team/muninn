@@ -35,7 +35,7 @@ pub fn compile(rule: &Rule) -> Result<String> {
 /// Returns None if no constraint can be derived (rule runs against all events).
 fn compile_logsource(ls: &super::parser::LogSource) -> Option<String> {
     let product = ls.product.as_deref().unwrap_or("").to_lowercase();
-    let _service = ls.service.as_deref().unwrap_or("").to_lowercase();
+    let service = ls.service.as_deref().unwrap_or("").to_lowercase();
     let category = ls.category.as_deref().unwrap_or("").to_lowercase();
 
     // Non-Windows products: filter by source format
@@ -65,19 +65,59 @@ fn compile_logsource(ls: &super::parser::LogSource) -> Option<String> {
         _ => {}
     }
 
-    // Windows service: do NOT add a Channel constraint to SQL.
-    // Channel filtering here is too strict — it excludes forwarded events
-    // (e.g., Sysmon events in Kaspersky.evtx retain their original Channel).
-    // Instead we rely on confidence scoring (compute_confidence) to flag
-    // detections where the matched event's Channel doesn't match the expected
-    // service Channel. This matches Zircolite's behavior of finding all matches
-    // and leaving false-positive filtering to the analyst.
+    // Webserver / web access log rules must NOT match Windows EVTX traffic.
+    // Without this guard, regex-keyword rules (e.g. "Java Payload Strings")
+    // false-fire on Partition/Diagnostic events whose strings happen to
+    // contain a `${(#a=@` substring.
+    if category == "webserver"
+        || category == "webserver_generic"
+        || category == "iis"
+        || category == "nginx"
+        || product == "iis"
+        || product == "nginx"
+    {
+        return Some("\"_source_format\" IN ('W3C', 'ApacheCombined', 'JSON')".into());
+    }
 
-    // Windows category → EventID constraints (matches Sysmon + Security audit event IDs)
-    // Only applied when product=windows or product is unset (assume windows for evtx-only datasets)
+    // Database query rules expect actual SQL query logs (MSSQL, MySQL,
+    // PostgreSQL audit). On a pure Windows EVTX dataset they are 100% FP
+    // (e.g. EID 8001 in `Microsoft-Windows-Store/Operational` carries the
+    // word "select" because Store activity dumps verbose JSON). Bind the
+    // category to log formats that actually carry SQL audit data.
+    if category == "database" {
+        return Some("\"_source_format\" IN ('JSON', 'CEF', 'LEEF', 'Syslog', 'CSV')".into());
+    }
+
+    // Application-layer / NDR / generic categories that have no Windows
+    // EVTX equivalent: drop them on Windows-only datasets.
+    if category == "proxy" || category == "antivirus_alert" || category == "firewall_log" {
+        return Some("\"_source_format\" IN ('CEF', 'LEEF', 'Syslog', 'JSON')".into());
+    }
+
+    // Windows category → (Channel + EventID) constraints.
     if product.is_empty() || product == "windows" {
         if let Some(filter) = category_to_eventid_filter(&category) {
             return Some(filter);
+        }
+    }
+
+    // Windows service → enforce Channel via LIKE so legitimate forwarded
+    // and re-emitted events (which keep the original Channel) still match,
+    // but cross-channel FPs (security rules on Application, dns-server
+    // rules on Microsoft-Store, etc.) are rejected.
+    //
+    // We use a LIKE pattern instead of `Channel = '...'` exact match for
+    // resilience: the channel field across Windows builds occasionally has
+    // hidden Unicode whitespace or differs in casing (e.g. legacy "WINDOWS
+    // POWERSHELL" vs "Windows PowerShell"). LIKE keeps the constraint
+    // tight enough to reject Microsoft-Store false positives but tolerant
+    // of these benign variations. For services without a known channel,
+    // the rule runs unconstrained and confidence-scoring handles FP risk.
+    if (product.is_empty() || product == "windows") && !service.is_empty() {
+        if let Some(channel) = service_to_channel(&service) {
+            // Quote any embedded apostrophes (none today, future-proofing).
+            let escaped = channel.replace('\'', "''");
+            return Some(format!("\"Channel\" LIKE '{escaped}'"));
         }
     }
 
@@ -91,62 +131,92 @@ fn compile_logsource(ls: &super::parser::LogSource) -> Option<String> {
     None
 }
 
-/// Map SIGMA logsource category (Windows) to SQL EventID constraints.
-/// Returns filters matching all standard sources for each category.
+/// Map SIGMA logsource category (Windows) to SQL constraints that bind both
+/// EventID *and* Channel.
+///
+/// **Critical**: filtering on EventID alone matches across unrelated channels.
+/// EventID 3 in `Microsoft-Windows-Store/Operational` is "Store activity",
+/// not a Sysmon network connection. EventID 16 in `System` is "service
+/// stopped", not Sysmon config change. Without the Channel guard, low-bar
+/// SIGMA rules (network_connection, registry_event, etc.) generate hundreds
+/// of false positives that cross-fire from unrelated event sources.
+///
+/// Each category therefore expands into a disjunction of `(Channel + EventID)`
+/// pairs corresponding to the Windows logging surfaces SIGMA rules expect:
+/// Sysmon for product telemetry, Security for the audit equivalents, and
+/// PowerShell channels for ps_*. Service-specific rules (logsource: service)
+/// continue to run channel-free for backward compatibility — they are gated
+/// elsewhere via `service_to_channel` and confidence scoring.
 fn category_to_eventid_filter(category: &str) -> Option<String> {
+    const SYSMON: &str = "Microsoft-Windows-Sysmon/Operational";
+    let sysmon_eid = |eid: &str| format!("(\"Channel\" = '{SYSMON}' AND \"EventID\" = '{eid}')");
+    let sysmon_in = |eids: &str| format!("(\"Channel\" = '{SYSMON}' AND \"EventID\" IN ({eids}))");
     match category {
-        // Process execution: Sysmon EID 1, Security EID 4688.
-        // Restrict Sysmon EID 1 by Provider_Name to avoid false positives from other
-        // logs that also use EID 1 (e.g. Exchange ManagedAvailability monitoring).
-        "process_creation" => Some(
-            "((\"EventID\" = '1' AND \"Provider_Name\" LIKE '%Sysmon%') OR \"EventID\" = '4688')"
-                .into(),
-        ),
-        // File events: Sysmon EID 11 (create), 23 (delete), 26 (shred)
+        // Process execution: Sysmon EID 1, Security audit EID 4688.
+        // Sysmon EID 1 is additionally guarded by Provider_Name to avoid
+        // overlap with other logs that emit EID 1 (e.g. Exchange health).
+        "process_creation" => Some(format!(
+            "(\"Channel\" = '{SYSMON}' AND \"EventID\" = '1' AND \"Provider_Name\" LIKE '%Sysmon%') \
+             OR (\"Channel\" = 'Security' AND \"EventID\" = '4688')"
+        )),
+        // File events: Sysmon EID 11 (create), 23 (delete), 26 (shred).
         "file_event"
         | "file_creation"
         | "file_change"
         | "file_delete"
         | "file_delete_detected"
-        | "file_rename" => Some("\"EventID\" IN ('11', '23', '26')".into()),
-        // Network connections: Sysmon EID 3, WFP EID 5156
-        "network_connection" | "network_connection_detection" => {
-            Some("\"EventID\" IN ('3', '5156')".into())
-        }
-        // Image load (DLL): Sysmon EID 7
-        "image_load" => Some("\"EventID\" = '7'".into()),
-        // Registry: Sysmon EID 12 (create/delete), 13 (set), 14 (rename)
+        | "file_rename" => Some(sysmon_in("'11', '23', '26'")),
+        // Network connections: Sysmon EID 3 OR Windows Filtering Platform EID 5156 (Security).
+        "network_connection" | "network_connection_detection" => Some(format!(
+            "(\"Channel\" = '{SYSMON}' AND \"EventID\" = '3') \
+             OR (\"Channel\" = 'Security' AND \"EventID\" = '5156')"
+        )),
+        // Image load (DLL): Sysmon EID 7.
+        "image_load" => Some(sysmon_eid("7")),
+        // Registry: Sysmon EID 12 / 13 / 14.
         "registry_add"
         | "registry_delete"
         | "registry_event"
         | "registry_rename"
         | "registry_set"
         | "registry_key_rename"
-        | "registry_value_set" => Some("\"EventID\" IN ('12', '13', '14')".into()),
-        // Process injection / remote thread: Sysmon EID 8
-        "create_remote_thread" => Some("\"EventID\" = '8'".into()),
-        // Raw disk read: Sysmon EID 9
-        "raw_access_read" => Some("\"EventID\" = '9'".into()),
-        // Process access (OpenProcess): Sysmon EID 10
-        "process_access" => Some("\"EventID\" = '10'".into()),
-        // Named pipes: Sysmon EID 17 (create), 18 (connect)
-        "pipe_creation" | "pipe_connected" => Some("\"EventID\" IN ('17', '18')".into()),
-        // DNS query: Sysmon EID 22
-        "dns_query" | "dns" => Some("\"EventID\" = '22'".into()),
-        // Process tampering: Sysmon EID 25
-        "process_tampering" => Some("\"EventID\" = '25'".into()),
-        // Driver load: Sysmon EID 6
-        "driver_load" => Some("\"EventID\" = '6'".into()),
-        // PowerShell module / ScriptBlock logging
-        "ps_module" => Some("\"EventID\" = '4103'".into()),
-        "ps_script" => Some("\"EventID\" IN ('4103', '4104')".into()),
-        "ps_classic_start" | "ps_classic_provider_start" => {
-            Some("\"EventID\" IN ('400', '600')".into())
-        }
-        // Windows account / logon events
-        "account_login" | "user_accounts" => {
-            Some("\"EventID\" IN ('4624', '4625', '4648', '4768', '4769', '4771', '4776')".into())
-        }
+        | "registry_value_set" => Some(sysmon_in("'12', '13', '14'")),
+        // Process injection / remote thread: Sysmon EID 8.
+        "create_remote_thread" => Some(sysmon_eid("8")),
+        // Raw disk read: Sysmon EID 9.
+        "raw_access_read" => Some(sysmon_eid("9")),
+        // Process access (OpenProcess): Sysmon EID 10.
+        "process_access" => Some(sysmon_eid("10")),
+        // Named pipes: Sysmon EID 17 (create) / 18 (connect).
+        "pipe_creation" | "pipe_connected" => Some(sysmon_in("'17', '18'")),
+        // DNS query: Sysmon EID 22.
+        "dns_query" | "dns" => Some(sysmon_eid("22")),
+        // Process tampering: Sysmon EID 25.
+        "process_tampering" => Some(sysmon_eid("25")),
+        // Driver load: Sysmon EID 6.
+        "driver_load" => Some(sysmon_eid("6")),
+        // WMI persistence: Sysmon EID 19/20/21. EID 19/20/21 also exists in
+        // unrelated channels (printer events) — bind tightly to Sysmon.
+        "wmi_event" | "wmi_subscription" => Some(sysmon_in("'19', '20', '21'")),
+        // Sysmon-internal events (config change, Sysmon stop): EID 16, 4.
+        "sysmon_status" | "sysmon" => Some(sysmon_in("'4', '16'")),
+        // PowerShell module / ScriptBlock logging on the modern PowerShell channel.
+        "ps_module" => Some(
+            "(\"Channel\" = 'Microsoft-Windows-PowerShell/Operational' AND \"EventID\" = '4103')"
+                .into(),
+        ),
+        "ps_script" => Some(
+            "(\"Channel\" = 'Microsoft-Windows-PowerShell/Operational' AND \"EventID\" IN ('4103', '4104'))"
+                .into(),
+        ),
+        "ps_classic_start" | "ps_classic_provider_start" => Some(
+            "(\"Channel\" = 'Windows PowerShell' AND \"EventID\" IN ('400', '600'))".into(),
+        ),
+        // Windows audit logon/account events live in the Security channel.
+        "account_login" | "user_accounts" => Some(
+            "(\"Channel\" = 'Security' AND \"EventID\" IN ('4624', '4625', '4648', '4768', '4769', '4771', '4776'))"
+                .into(),
+        ),
         _ => None,
     }
 }
@@ -174,6 +244,19 @@ fn service_to_channel(service: &str) -> Option<&'static str> {
         "terminalservices-localsessionmanager" => {
             Some("Microsoft-Windows-TerminalServices-LocalSessionManager/Operational")
         }
+        "kaspersky_endpoint" => Some("Kaspersky Endpoint Security"),
+        "applocker" => Some("Microsoft-Windows-AppLocker/EXE and DLL"),
+        "applocker-msi-script" => Some("Microsoft-Windows-AppLocker/MSI and Script"),
+        "applocker-packaged" => Some("Microsoft-Windows-AppLocker/Packaged app-Execution"),
+        "applocker-packaged-deployment" => {
+            Some("Microsoft-Windows-AppLocker/Packaged app-Deployment")
+        }
+        // Several SigmaHQ rules use service names that match the channel verbatim
+        // with a space-separated suffix; tolerate the major ones.
+        "windows-defender" | "defender" => Some("Microsoft-Windows-Windows Defender/Operational"),
+        "code-integrity" | "codeintegrity" => Some("Microsoft-Windows-CodeIntegrity/Operational"),
+        "smbclient-security" => Some("Microsoft-Windows-SmbClient/Security"),
+        "smbserver-security" => Some("Microsoft-Windows-SMBServer/Security"),
         _ => None,
     }
 }

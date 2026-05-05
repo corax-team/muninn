@@ -25,6 +25,15 @@ pub fn flatten_json(value: &Value, source_file: &str, format: SourceFormat) -> E
 /// originals so both forms work in SQL queries.
 fn apply_sigma_aliases(fields: &mut HashMap<String, String>) {
     // System element aliases: XML attribute paths → short names
+    //
+    // EVTX <System> sub-elements like <EventID Qualifiers="32770">7045</EventID>
+    // serialize to {"EventID": {"#attributes": {"Qualifiers": "32770"},
+    // "#text": "7045"}}. The flattener stores them as `EventID_#text` and
+    // `EventID_#attributes_Qualifiers`. SIGMA rules expect short names (e.g.
+    // `EventID: 7045`), so we alias the `_#text` form back to the bare name.
+    // Without this, every SIGMA rule keyed on EventID, Level, Task, Opcode or
+    // Keywords silently fails on events where those fields carry XML
+    // attributes (e.g. all System.evtx and Kaspersky avp logs).
     const SYSTEM_ALIASES: &[(&str, &str)] = &[
         ("Provider_#attributes_Name", "Provider_Name"),
         ("Provider_#attributes_Guid", "Provider_Guid"),
@@ -32,6 +41,13 @@ fn apply_sigma_aliases(fields: &mut HashMap<String, String>) {
         ("Execution_#attributes_ThreadID", "ExecutionThreadID"),
         ("TimeCreated_#attributes_SystemTime", "TimeCreated"),
         ("Security_#attributes_UserID", "SecurityUserID"),
+        ("EventID_#text", "EventID"),
+        ("Level_#text", "Level"),
+        ("Task_#text", "Task"),
+        ("Opcode_#text", "Opcode"),
+        ("Keywords_#text", "Keywords"),
+        ("Version_#text", "Version"),
+        ("Correlation_#text", "Correlation"),
     ];
 
     // Security EventID 4688 → SIGMA process_creation field mapping

@@ -184,6 +184,12 @@ struct Cli {
     #[arg(long = "gui", help = "Generate self-contained HTML report", default_missing_value = "auto", num_args = 0..=1)]
     gui: Option<PathBuf>,
 
+    /// Directory for all auto-named reports (HTML, IOC csv/txt, login, summary,
+    /// anomaly, etc.). Use "auto" to get a timestamped folder like
+    /// `muninn_report_2026-05-05_13-15-22/`. When unset, files land in cwd.
+    #[arg(long = "report-dir", default_missing_value = "auto", num_args = 0..=1)]
+    report_dir: Option<PathBuf>,
+
     // --- Phase 5 features ---
     #[arg(
         long = "transforms",
@@ -575,83 +581,159 @@ fn main() -> Result<()> {
         }
     }
 
-    // Resolve "auto" paths to timestamped filenames
+    // GUI mode expansion: --gui auto-enables every analysis the report can
+    // surface, because the HTML aggregates them all. Mirrors the --hunt
+    // pattern above. OpenTIP is intentionally NOT auto-enabled (requires
+    // an API key the user must supply explicitly).
+    if cli.gui.is_some() {
+        cli.transforms = true;
+        if cli.rules.is_none() {
+            let default_rules = PathBuf::from("sigma_rules");
+            if default_rules.is_dir() {
+                cli.rules = Some(default_rules);
+            }
+        }
+        if cli.anomalies.is_none() {
+            cli.anomalies = Some(PathBuf::from("auto"));
+        }
+        if cli.ioc_extract.is_none() {
+            cli.ioc_extract = Some(PathBuf::from("auto"));
+        }
+        if cli.login_analysis.is_none() {
+            cli.login_analysis = Some(PathBuf::from("auto"));
+        }
+        if cli.timeline.is_none() {
+            cli.timeline = Some(PathBuf::from("auto"));
+        }
+        if cli.correlate.is_none() {
+            cli.correlate = Some(PathBuf::from("auto"));
+        }
+        if cli.killchain.is_none() {
+            cli.killchain = Some(PathBuf::from("auto"));
+        }
+        if cli.threat_score.is_none() {
+            cli.threat_score = Some(PathBuf::from("auto"));
+        }
+        if cli.summary.is_none() {
+            cli.summary = Some(PathBuf::from("auto"));
+        }
+        if !cli.hunt && !cli.hunt_fast {
+            cli.hunt = true;
+        }
+    }
+    // Recompute is_hunt after potential --gui auto-enable above.
+    let is_hunt = cli.hunt || cli.hunt_fast;
+
+    // Resolve "auto" paths to timestamped filenames.
+    //
+    // `--report-dir auto` (or any `--report-dir <path>`) puts every
+    // auto-resolved report file inside that single directory, keeping the
+    // working tree tidy. Without `--report-dir`, behavior is unchanged.
+    // When `--gui auto` is used and no explicit `--report-dir` is set, we
+    // promote the implicit behavior to a folder so all side-car outputs
+    // (logins, summary, iocs, etc.) sit next to the HTML report.
     let ts = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+    let ts_str = ts.to_string();
+
+    if cli
+        .report_dir
+        .as_ref()
+        .is_some_and(|p| p.as_os_str() == "auto")
+    {
+        cli.report_dir = Some(PathBuf::from(format!("muninn_report_{}", ts_str)));
+    }
+    // If --gui is auto-enabled (meta-flag) without an explicit --report-dir,
+    // default to a sibling folder so all the auto side-car files stay grouped.
+    if cli.gui.is_some() && cli.report_dir.is_none() {
+        cli.report_dir = Some(PathBuf::from(format!("muninn_report_{}", ts_str)));
+    }
+    if let Some(ref dir) = cli.report_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    // `auto_path("report", "html")` returns either `<report_dir>/report.html`
+    // or the legacy `muninn_report_<ts>.html` when no folder is in use.
+    let auto_path = |stem: &str, ext: &str| -> PathBuf {
+        if let Some(ref dir) = cli.report_dir {
+            dir.join(format!("{stem}.{ext}"))
+        } else {
+            PathBuf::from(format!("muninn_{stem}_{ts_str}.{ext}"))
+        }
+    };
     if cli.dbfile.as_ref().is_some_and(|p| p.as_os_str() == "auto") {
-        cli.dbfile = Some(PathBuf::from(format!("muninn_db_{}.db", ts)));
+        cli.dbfile = Some(auto_path("db", "db"));
     }
     if cli
         .keepflat
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.keepflat = Some(PathBuf::from(format!("muninn_events_{}.jsonl", ts)));
+        cli.keepflat = Some(auto_path("events", "jsonl"));
     }
     if cli
         .navigator
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.navigator = Some(PathBuf::from(format!("muninn_navigator_{}.json", ts)));
+        cli.navigator = Some(auto_path("navigator", "json"));
     }
     if cli.gui.as_ref().is_some_and(|p| p.as_os_str() == "auto") {
-        cli.gui = Some(PathBuf::from(format!("muninn_report_{}.html", ts)));
+        cli.gui = Some(auto_path("report", "html"));
     }
     if cli
         .timeline
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.timeline = Some(PathBuf::from(format!("muninn_timeline_{}.txt", ts)));
+        cli.timeline = Some(auto_path("timeline", "txt"));
     }
     if cli
         .killchain
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.killchain = Some(PathBuf::from(format!("muninn_killchain_{}.txt", ts)));
+        cli.killchain = Some(auto_path("killchain", "txt"));
     }
     if cli
         .anomalies
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.anomalies = Some(PathBuf::from(format!("muninn_anomalies_{}.txt", ts)));
+        cli.anomalies = Some(auto_path("anomalies", "txt"));
     }
     if cli
         .ioc_extract
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.ioc_extract = Some(PathBuf::from(format!("muninn_iocs_{}.txt", ts)));
+        cli.ioc_extract = Some(auto_path("iocs", "txt"));
     }
     if cli
         .correlate
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.correlate = Some(PathBuf::from(format!("muninn_correlate_{}.txt", ts)));
+        cli.correlate = Some(auto_path("correlate", "txt"));
     }
     if cli
         .threat_score
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.threat_score = Some(PathBuf::from(format!("muninn_scores_{}.txt", ts)));
+        cli.threat_score = Some(auto_path("scores", "txt"));
     }
     if cli
         .login_analysis
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.login_analysis = Some(PathBuf::from(format!("muninn_logins_{}.txt", ts)));
+        cli.login_analysis = Some(auto_path("logins", "txt"));
     }
     if cli
         .summary
         .as_ref()
         .is_some_and(|p| p.as_os_str() == "auto")
     {
-        cli.summary = Some(PathBuf::from(format!("muninn_summary_{}.txt", ts)));
+        cli.summary = Some(auto_path("summary", "txt"));
     }
     if cli
         .template_output
@@ -663,7 +745,7 @@ fn main() -> Result<()> {
             Some("sarif") => "sarif.json",
             _ => "json",
         };
-        cli.template_output = Some(PathBuf::from(format!("muninn_export_{}.{}", ts, ext)));
+        cli.template_output = Some(auto_path("export", ext));
     }
 
     /// Save report to file: .html → HTML table, .json → JSON, else plain text.
@@ -1926,6 +2008,20 @@ fn main() -> Result<()> {
         }
     }
 
+    // Stashes for the new --gui report. Each analysis block populates its own
+    // stash so the HTML report (built at end-of-main) can pull every source.
+    let is_gui = cli.gui.is_some();
+    let mut gui_login_result: Option<muninn::login::LoginAnalysis> = None;
+    let mut gui_summary_result: Option<muninn::summary::ExecutiveSummary> = None;
+    let mut gui_anomalies_vec: Vec<muninn::anomaly::Anomaly> = Vec::new();
+    let mut gui_hunt_findings: Vec<muninn::hunt::HuntFindingSummary> = Vec::new();
+    let mut gui_iocs_vec: Vec<muninn::ioc::Ioc> = Vec::new();
+    let mut gui_scores_vec: Vec<muninn::scoring::ThreatScore> = Vec::new();
+    let mut gui_chains_vec: Vec<muninn::correlate::AttackChain> = Vec::new();
+    let mut gui_timeline_vec: Vec<muninn::timeline::TimelineEntry> = Vec::new();
+    #[cfg(feature = "ioc-enrich")]
+    let mut gui_opentip_results: Vec<muninn::opentip::OpenTipResult> = Vec::new();
+
     if !results.is_empty() {
         results.sort_by(|a, b| {
             level_rank(&b.level)
@@ -2238,6 +2334,9 @@ fn main() -> Result<()> {
             if !cli.quiet {
                 println!("  {} Timeline → {:?}", "✓".green(), tl_path);
             }
+            if is_gui {
+                gui_timeline_vec = entries;
+            }
         }
 
         // Correlation Engine
@@ -2264,6 +2363,9 @@ fn main() -> Result<()> {
                     println!("  {} Correlations → {:?}", "✓".green(), corr_path);
                 }
             }
+            if is_gui {
+                gui_chains_vec = chains;
+            }
         }
 
         // Threat Score
@@ -2282,6 +2384,9 @@ fn main() -> Result<()> {
                 if !cli.quiet {
                     println!("  {} Threat scores → {:?}", "✓".green(), score_path);
                 }
+            }
+            if is_gui {
+                gui_scores_vec = scores;
             }
         }
 
@@ -2341,73 +2446,8 @@ fn main() -> Result<()> {
             }
         }
 
-        // Mini-GUI HTML report
-        if let Some(ref gui_path) = cli.gui {
-            let total_matches: usize = results.iter().map(|d| d.result.count).sum();
-            const GUI_EVENT_LIMIT: usize = 200;
-            const GUI_VALUE_MAX: usize = 1000;
-            let gui_data: Vec<_> = results
-                .iter()
-                .map(|d| {
-                    let limited_rows: Vec<HashMap<String, String>> = d
-                        .result
-                        .rows
-                        .iter()
-                        .take(GUI_EVENT_LIMIT)
-                        .map(|row| {
-                            row.iter()
-                                .filter(|(k, v)| {
-                                    // Include all non-empty fields except XML metadata noise
-                                    !v.is_empty()
-                                        && !k.starts_with('#')
-                                        && !k.starts_with("xmlns")
-                                        && !k.starts_with("Provider_#")
-                                        && !k.starts_with("Execution_#")
-                                        && !k.starts_with("Security_#")
-                                        && !k.starts_with("TimeCreated_#")
-                                        && !k.starts_with("EventID_#")
-                                })
-                                .map(|(k, v)| {
-                                    let truncated = if v.len() > GUI_VALUE_MAX {
-                                        format!(
-                                            "{}...[truncated {} chars]",
-                                            &v[..GUI_VALUE_MAX],
-                                            v.len() - GUI_VALUE_MAX
-                                        )
-                                    } else {
-                                        v.clone()
-                                    };
-                                    (k.clone(), truncated)
-                                })
-                                .collect()
-                        })
-                        .collect();
-                    (
-                        d.title.clone(),
-                        d.level.clone(),
-                        d.result.count,
-                        d.tags.clone(),
-                        limited_rows,
-                        d.description.clone(),
-                        d.id.clone(),
-                        d.confidence.clone(),
-                    )
-                })
-                .collect();
-            let summary = serde_json::json!({
-                "files_scanned": files.len(),
-                "total_events": total_events,
-                "rules_matched": results.len(),
-                "total_detections": total_matches,
-                "workers": workers,
-                "duration_sec": format!("{:.1}", start.elapsed().as_secs_f64()),
-            });
-            let html = muninn::output::gui::generate_html_report(&gui_data, &summary)?;
-            std::fs::write(gui_path, &html)?;
-            if !cli.quiet {
-                println!("  {} HTML report → {:?}", "✓".green(), gui_path);
-            }
-        }
+        // GUI block has been moved to end-of-main so it can include results
+        // from analyses that run later (anomalies, login, summary, IOC, opentip).
     } else if !cli.stats && cli.distinct.is_none() && cli.dbfile.is_none() && !cli.quiet {
         println!("  {} No matches found.\n", "[*]".yellow());
     }
@@ -2438,24 +2478,30 @@ fn main() -> Result<()> {
         if !cli.quiet {
             println!("  {} Anomalies → {:?}", "✓".green(), anom_path);
         }
+        if is_gui {
+            gui_anomalies_vec = anomalies;
+        }
     }
 
     // Hunt Findings (collect from SQLite after all transforms applied)
-    if is_hunt {
+    if is_hunt || is_gui {
         match muninn::hunt::collect_hunt_findings(&engine) {
             Ok(findings) if !findings.is_empty() => {
                 let output = muninn::hunt::render_hunt_findings(&findings);
-                if !cli.quiet {
+                if !cli.quiet && is_hunt {
                     print!("{}", output);
+                }
+                if is_gui {
+                    gui_hunt_findings = findings;
                 }
             }
             Ok(_) => {
-                if !cli.quiet {
+                if !cli.quiet && is_hunt {
                     println!("  {} No hunt findings detected.", "✓".green());
                 }
             }
             Err(e) => {
-                if !cli.quiet {
+                if !cli.quiet && is_hunt {
                     eprintln!("  {} Hunt findings error: {}", "✗".red(), e);
                 }
             }
@@ -2489,6 +2535,9 @@ fn main() -> Result<()> {
                 save_report(login_path, "Login Analysis", &output, &analysis)?;
                 if !cli.quiet {
                     println!("  {} Login analysis → {:?}", "✓".green(), login_path);
+                }
+                if is_gui {
+                    gui_login_result = Some(analysis);
                 }
             }
             Err(e) => {
@@ -2526,6 +2575,9 @@ fn main() -> Result<()> {
         if !cli.quiet {
             println!("  {} Summary → {:?}", "✓".green(), summary_path);
         }
+        if is_gui {
+            gui_summary_result = Some(summary);
+        }
     }
 
     // IOC Extraction (streaming — already collected during file processing)
@@ -2554,6 +2606,9 @@ fn main() -> Result<()> {
         let output = muninn::ioc::render_iocs(&iocs);
         if !cli.quiet {
             print!("{}", output);
+        }
+        if is_gui {
+            gui_iocs_vec = iocs.clone();
         }
 
         // IOC Enrichment via external APIs (feature-gated)
@@ -2629,6 +2684,9 @@ fn main() -> Result<()> {
                 client.check_iocs(&iocs, cli.opentip_max, cli.quiet, &cli.opentip_types);
             if let Some(sp) = opentip_spinner {
                 sp.finish_and_clear();
+            }
+            if is_gui {
+                gui_opentip_results = opentip_results.clone();
             }
             if !opentip_results.is_empty() {
                 // Save reports
@@ -2707,10 +2765,14 @@ fn main() -> Result<()> {
         let output_path = if let Some(ref output) = cli.output {
             output.clone()
         } else if !cli.no_report {
-            PathBuf::from(format!(
-                "muninn_report_{}.json",
-                run_timestamp.format("%Y-%m-%d_%H-%M-%S")
-            ))
+            if let Some(ref dir) = cli.report_dir {
+                dir.join("report.json")
+            } else {
+                PathBuf::from(format!(
+                    "muninn_report_{}.json",
+                    run_timestamp.format("%Y-%m-%d_%H-%M-%S")
+                ))
+            }
         } else {
             PathBuf::new()
         };
@@ -2778,6 +2840,268 @@ fn main() -> Result<()> {
                 );
                 println!();
             }
+        }
+    }
+
+    // HTML Report (--gui) — runs at end-of-main so it can include results
+    // from every analysis (login, summary, anomalies, hunt, iocs, opentip).
+    if let Some(ref gui_path) = cli.gui {
+        use muninn::output::gui::{
+            ComputerMetric, DetectionFull, EidMetric, GuiReportContext, KillchainTactic,
+            ScanParams, SeverityRollup,
+        };
+
+        let total_matches: usize = results.iter().map(|d| d.result.count).sum();
+        let detection_mapper = muninn::mitre::MitreMapper::new();
+        let detections_full: Vec<DetectionFull> = results
+            .iter()
+            .map(|d| {
+                let mitre_refs = muninn::mitre::MitreMapper::parse_tags(&d.tags);
+                let mitre_techniques: Vec<String> = mitre_refs
+                    .iter()
+                    .filter_map(|r| r.technique_id.clone())
+                    .collect();
+                let mitre_tactics: Vec<String> =
+                    mitre_refs.iter().filter_map(|r| r.tactic.clone()).collect();
+                let _ = &detection_mapper;
+                DetectionFull {
+                    title: d.title.clone(),
+                    level: d.level.clone(),
+                    confidence: d.confidence.clone(),
+                    count: d.result.count,
+                    description: d.description.clone(),
+                    id: d.id.clone(),
+                    author: d.author.clone(),
+                    tags: d.tags.clone(),
+                    mitre_techniques,
+                    mitre_tactics,
+                    events: d.result.rows.clone(),
+                }
+            })
+            .collect();
+
+        // Per-computer metrics derived from event rows.
+        let mut computer_map: std::collections::HashMap<String, ComputerMetric> =
+            std::collections::HashMap::new();
+        for det in &detections_full {
+            let level_lower = det.level.to_lowercase();
+            for ev in &det.events {
+                let computer = ev
+                    .get("Computer")
+                    .or_else(|| ev.get("computer"))
+                    .or_else(|| ev.get("Hostname"))
+                    .or_else(|| ev.get("host"))
+                    .cloned()
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                let entry =
+                    computer_map
+                        .entry(computer.clone())
+                        .or_insert_with(|| ComputerMetric {
+                            computer: computer.clone(),
+                            total_events_seen: 0,
+                            unique_detections: 0,
+                            critical: 0,
+                            high: 0,
+                            medium: 0,
+                            low: 0,
+                            informational: 0,
+                        });
+                entry.total_events_seen += 1;
+                match level_lower.as_str() {
+                    "critical" => entry.critical += 1,
+                    "high" => entry.high += 1,
+                    "medium" => entry.medium += 1,
+                    "low" => entry.low += 1,
+                    _ => entry.informational += 1,
+                }
+            }
+        }
+        // Unique-rule count per computer (one rule, one increment regardless of
+        // event count so this column is "how many distinct rules fired here").
+        for det in &detections_full {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for ev in &det.events {
+                let computer = ev
+                    .get("Computer")
+                    .or_else(|| ev.get("computer"))
+                    .or_else(|| ev.get("Hostname"))
+                    .or_else(|| ev.get("host"))
+                    .map(|s| s.as_str())
+                    .unwrap_or("<unknown>");
+                if seen.insert(computer) {
+                    if let Some(entry) = computer_map.get_mut(computer) {
+                        entry.unique_detections += 1;
+                    }
+                }
+            }
+        }
+        let mut computer_metrics: Vec<ComputerMetric> = computer_map.into_values().collect();
+        computer_metrics.sort_by(|a, b| {
+            (b.critical * 1000 + b.high * 100 + b.medium * 10 + b.low)
+                .cmp(&(a.critical * 1000 + a.high * 100 + a.medium * 10 + a.low))
+        });
+
+        // Per-EventID metrics derived from event rows.
+        let mut eid_map: std::collections::HashMap<(String, String), EidMetric> =
+            std::collections::HashMap::new();
+        for det in &detections_full {
+            for ev in &det.events {
+                let eid = ev
+                    .get("EventID")
+                    .or_else(|| ev.get("EventId"))
+                    .or_else(|| ev.get("event_id"))
+                    .cloned()
+                    .unwrap_or_default();
+                let channel = ev
+                    .get("Channel")
+                    .or_else(|| ev.get("channel"))
+                    .cloned()
+                    .unwrap_or_default();
+                if eid.is_empty() {
+                    continue;
+                }
+                let entry = eid_map
+                    .entry((eid.clone(), channel.clone()))
+                    .or_insert_with(|| EidMetric {
+                        event_id: eid.clone(),
+                        channel: channel.clone(),
+                        total: 0,
+                        with_detection: 0,
+                    });
+                entry.total += 1;
+                entry.with_detection += 1;
+            }
+        }
+        let mut eid_metrics: Vec<EidMetric> = eid_map.into_values().collect();
+        eid_metrics.sort_by(|a, b| b.total.cmp(&a.total));
+
+        // Per-severity rollup: total = sum of counts, unique = distinct rules.
+        let mut severity_rollup: std::collections::HashMap<String, SeverityRollup> =
+            std::collections::HashMap::new();
+        for det in &detections_full {
+            let level = det.level.to_lowercase();
+            let entry = severity_rollup.entry(level).or_default();
+            entry.total += det.count;
+            entry.unique += 1;
+        }
+
+        // Killchain pre-aggregation by tactic.
+        let mut killchain_map: std::collections::HashMap<String, KillchainTactic> =
+            std::collections::HashMap::new();
+        let level_rank_for_kc = |lvl: &str| -> u8 {
+            match lvl.to_lowercase().as_str() {
+                "critical" => 4,
+                "high" => 3,
+                "medium" => 2,
+                "low" => 1,
+                _ => 0,
+            }
+        };
+        for det in &detections_full {
+            for tactic in &det.mitre_tactics {
+                let entry =
+                    killchain_map
+                        .entry(tactic.clone())
+                        .or_insert_with(|| KillchainTactic {
+                            tactic_slug: tactic.clone(),
+                            tactic_display: muninn::mitre::tactic_display_name(tactic).to_string(),
+                            detections: Vec::new(),
+                            max_severity: "informational".to_string(),
+                        });
+                entry
+                    .detections
+                    .push((det.title.clone(), det.level.clone(), det.count));
+                if level_rank_for_kc(&det.level) > level_rank_for_kc(&entry.max_severity) {
+                    entry.max_severity = det.level.clone();
+                }
+            }
+        }
+        let mut killchain: Vec<KillchainTactic> = killchain_map.into_values().collect();
+        killchain.sort_by_key(|k| {
+            muninn::mitre::TACTIC_ORDER
+                .iter()
+                .position(|t| *t == k.tactic_slug.as_str())
+                .unwrap_or(usize::MAX)
+        });
+
+        // First/last event timestamp scan-wide.
+        let (first_event_ts, last_event_ts) = {
+            let ts_fields = [
+                "SystemTime",
+                "timestamp",
+                "@timestamp",
+                "TimeCreated",
+                "UtcTime",
+                "date",
+                "_time",
+                "time",
+            ];
+            let mut first: Option<String> = None;
+            let mut last: Option<String> = None;
+            for det in &detections_full {
+                for ev in &det.events {
+                    for f in &ts_fields {
+                        if let Some(v) = ev.get(*f) {
+                            if !v.is_empty() {
+                                if first.as_ref().is_none_or(|f| v < f) {
+                                    first = Some(v.clone());
+                                }
+                                if last.as_ref().is_none_or(|l| v > l) {
+                                    last = Some(v.clone());
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            (first, last)
+        };
+
+        let scan = ScanParams {
+            muninn_version: env!("CARGO_PKG_VERSION"),
+            command_line: std::env::args().collect::<Vec<_>>().join(" "),
+            run_timestamp: run_timestamp.to_rfc3339(),
+            workers,
+            duration_sec: start.elapsed().as_secs_f64(),
+            files_scanned: files.len(),
+            source_files: Vec::new(),
+            total_events,
+            events_with_hits: total_matches,
+            reduction_pct: if total_events > 0 {
+                100.0 * (1.0 - total_matches as f64 / total_events as f64)
+            } else {
+                0.0
+            },
+            first_event_ts,
+            last_event_ts,
+            min_level: cli.min_level.clone(),
+            use_cdn: true,
+        };
+
+        let mut ctx = GuiReportContext::new(scan);
+        ctx.detections = detections_full;
+        ctx.severity_rollup = severity_rollup;
+        ctx.computer_metrics = computer_metrics;
+        ctx.eid_metrics = eid_metrics;
+        ctx.killchain = killchain;
+        ctx.login = gui_login_result.take();
+        ctx.summary = gui_summary_result.take();
+        ctx.anomalies = std::mem::take(&mut gui_anomalies_vec);
+        ctx.hunt_findings = std::mem::take(&mut gui_hunt_findings);
+        ctx.iocs = std::mem::take(&mut gui_iocs_vec);
+        ctx.scores = std::mem::take(&mut gui_scores_vec);
+        ctx.chains = std::mem::take(&mut gui_chains_vec);
+        ctx.timeline = std::mem::take(&mut gui_timeline_vec);
+        #[cfg(feature = "ioc-enrich")]
+        {
+            ctx.opentip_results = std::mem::take(&mut gui_opentip_results);
+        }
+
+        let html = muninn::output::gui::generate_html_report(&ctx)?;
+        std::fs::write(gui_path, &html)?;
+        if !cli.quiet {
+            println!("  {} HTML report → {:?}", "✓".green(), gui_path);
         }
     }
 

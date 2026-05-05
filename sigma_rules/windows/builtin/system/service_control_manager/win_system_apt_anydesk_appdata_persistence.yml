@@ -1,0 +1,43 @@
+title: AnyDesk Remote Access Service Installed From User AppData
+id: 7d5a4c8b-2f9e-4a1c-9d3e-6b8f1c2d3e4f
+status: stable
+description: |
+    Detects the AnyDesk remote-access service being registered with an
+    ImagePath under a user profile (Roaming/Local AppData) instead of the
+    canonical "C:\\Program Files (x86)\\AnyDesk\\". This is a classic
+    initial-access / persistence indicator used by APTs (Head Mare, Twelve,
+    Beavertail, Mascarara) and ransomware affiliates that drop AnyDesk into
+    the victim's user directory through phishing or spear-phishing payloads.
+    The legitimate installer always writes the binary into Program Files and
+    runs it as a system service from there; an AnyDesk service whose
+    ImagePath contains "AppData" is almost always operator-deployed.
+references:
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+    - https://www.anydesk.com/en/changelog
+    - https://attack.mitre.org/software/S0184/
+author: Corax Security
+date: 2026-05-05
+tags:
+    - attack.persistence
+    - attack.command-and-control
+    - attack.t1219
+    - attack.t1543.003
+    - threat-actor.head-mare
+    - tool.anydesk
+logsource:
+    product: windows
+    service: system
+detection:
+    selection:
+        Provider_Name: 'Service Control Manager'
+        EventID: 7045
+        ServiceName|contains: 'AnyDesk'
+        ImagePath|contains:
+            - '\AppData\Roaming\'
+            - '\AppData\Local\'
+            - '\Users\Public\'
+            - '\ProgramData\'
+    condition: selection
+falsepositives:
+    - None known. Legitimate AnyDesk deployments always install under Program Files.
+level: critical

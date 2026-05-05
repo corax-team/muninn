@@ -1,0 +1,32 @@
+title: Kaspersky Endpoint Security Neutralized An Object
+id: af9d6e3c-5c2b-7d4e-cb6f-9e1a4f506172
+status: stable
+description: |
+    Kaspersky Endpoint Security disinfected, deleted, or quarantined an
+    object on disk. While each individual hit is a "good outcome" (the AV
+    cleaned a threat), a burst of these events on the same host within a
+    short window typically indicates an active intrusion attempt: an
+    operator dropped or executed multiple payloads and the AV picked up
+    several of them. Pivot off the host name and the time window for
+    concurrent process_creation, network_connection and image_load events.
+references:
+    - https://support.kaspersky.com/KESWin/12.0/en-US/175970.htm
+author: Corax Security
+date: 2026-05-05
+tags:
+    - attack.defense-evasion
+    - attack.t1562.001
+logsource:
+    product: windows
+    service: kaspersky_endpoint
+detection:
+    selection:
+        Provider_Name: 'avp'
+        EventID:
+            - 2071   # Object disinfected
+            - 2075   # Object quarantined
+            - 2078   # Object deleted
+    condition: selection
+falsepositives:
+    - Routine AV cleanup of stale samples in user Downloads / Email cache.
+level: medium

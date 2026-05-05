@@ -1,0 +1,58 @@
+title: Remote Access Tool Service Installed From Unusual Path
+id: 8e6b5d9c-3a0f-5b2d-ae4f-7c9e2d3e4f50
+status: stable
+description: |
+    Generic detection for known remote-access / remote-management tools
+    (AnyDesk, TeamViewer, Atera, ScreenConnect / ConnectWise, NetSupport,
+    Splashtop, RustDesk, MeshAgent) registered as a Windows service with an
+    ImagePath outside of "C:\\Program Files" or "C:\\Program Files (x86)".
+    Threat actors deliver these tools through phishing and execute them out of
+    user-writable directories (AppData, Public, ProgramData, Temp, Downloads)
+    to avoid the legitimate installer footprint and to bypass software
+    inventory tooling. This single rule covers a recurring pattern across
+    Conti, Black Basta, BlackCat, LockBit, Akira, Head Mare and Twelve.
+references:
+    - https://attack.mitre.org/techniques/T1219/
+    - https://www.cisa.gov/sites/default/files/publications/AA22-294A_Stop_Ransomware.pdf
+    - https://securelist.com/head-mare-twelve-collaboration/115887/
+author: Corax Security
+date: 2026-05-05
+tags:
+    - attack.persistence
+    - attack.command-and-control
+    - attack.t1219
+    - attack.t1543.003
+logsource:
+    product: windows
+    service: system
+detection:
+    selection_eid:
+        Provider_Name: 'Service Control Manager'
+        EventID: 7045
+    selection_tool:
+        ServiceName|contains:
+            - 'AnyDesk'
+            - 'TeamViewer'
+            - 'Atera'
+            - 'ScreenConnect'
+            - 'ConnectWise'
+            - 'NetSupport'
+            - 'Splashtop'
+            - 'RustDesk'
+            - 'MeshAgent'
+            - 'TacticalRMM'
+            - 'Action1'
+    selection_susp_path:
+        ImagePath|contains:
+            - '\AppData\Roaming\'
+            - '\AppData\Local\'
+            - '\Users\Public\'
+            - '\ProgramData\'
+            - '\Windows\Temp\'
+            - '\Temp\'
+            - '\Downloads\'
+            - '\Desktop\'
+    condition: selection_eid and selection_tool and selection_susp_path
+falsepositives:
+    - Custom MSP / RMM deployments that intentionally place tools outside Program Files.
+level: high
