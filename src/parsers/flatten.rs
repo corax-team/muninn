@@ -14,7 +14,15 @@ pub fn flatten_json(value: &Value, source_file: &str, format: SourceFormat) -> E
     // e.g., Provider_#attributes_Name → Provider_Name (used by SIGMA rules)
     apply_sigma_aliases(&mut flat);
 
-    event.fields = flat;
+    // EXTEND, don't replace: Event::new() seeded the map with the
+    // metadata fields that compile_logsource() filters on
+    // (`_source_format`, `_source_file`). A naive `event.fields = flat`
+    // would obliterate them and silently break every SIGMA rule whose
+    // logsource maps to `_source_format = '<X>'` (all 205+ AWS / Azure /
+    // GCP / M365 / Okta / Cisco / Apache / Linux rules).
+    for (k, v) in flat {
+        event.fields.insert(k, v);
+    }
     event.fields.insert("_raw".to_string(), event.raw.clone());
     event
 }
@@ -136,6 +144,25 @@ fn apply_sigma_aliases(fields: &mut HashMap<String, String>) {
 }
 
 fn flatten_recursive(value: &Value, prefix: String, out: &mut HashMap<String, String>) {
+    flatten_recursive_dual(value, prefix.clone(), prefix, out);
+}
+
+/// Recursive flattener that maintains TWO parallel prefixes simultaneously:
+/// underscore form (`userIdentity_arn`, our historical convention) AND dot
+/// form (`userIdentity.arn`, the SIGMA spec convention used by every
+/// SigmaHQ cloud rule). Both keys point at the same value, so a SIGMA rule
+/// matching `userIdentity.arn` and a Muninn-native one matching
+/// `userIdentity_arn` both resolve.
+///
+/// Without this, all 205+ SIGMA AWS / Azure / GCP / M365 rules silently
+/// fail to match against CloudTrail / AAD / Audit Log inputs because
+/// their `.`-separated field names never resolve.
+fn flatten_recursive_dual(
+    value: &Value,
+    prefix_us: String,
+    prefix_dot: String,
+    out: &mut HashMap<String, String>,
+) {
     match value {
         Value::Object(map) => {
             if map.contains_key("Event") {
@@ -145,18 +172,29 @@ fn flatten_recursive(value: &Value, prefix: String, out: &mut HashMap<String, St
                 }
             }
             for (key, val) in map {
-                let new_key = if prefix.is_empty() {
-                    key.clone()
+                let (new_us, new_dot) = if prefix_us.is_empty() {
+                    (key.clone(), key.clone())
                 } else {
-                    format!("{}_{}", prefix, key)
+                    (
+                        format!("{}_{}", prefix_us, key),
+                        format!("{}.{}", prefix_dot, key),
+                    )
                 };
                 match val {
-                    Value::Object(_) | Value::Array(_) => flatten_recursive(val, new_key, out),
+                    Value::Object(_) | Value::Array(_) => {
+                        flatten_recursive_dual(val, new_us, new_dot, out)
+                    }
                     _ => {
                         let s = val_to_string(val);
                         if !s.is_empty() {
-                            out.insert(new_key.clone(), s.clone());
-                            if !prefix.is_empty() {
+                            out.insert(new_us.clone(), s.clone());
+                            // Only store dot alias when the path actually
+                            // descended into a nested object — keeps the row
+                            // wide-but-not-doubled for top-level keys.
+                            if new_dot != new_us {
+                                out.insert(new_dot, s.clone());
+                            }
+                            if !prefix_us.is_empty() {
                                 out.entry(key.clone()).or_insert(s);
                             }
                         }
@@ -178,17 +216,28 @@ fn flatten_recursive(value: &Value, prefix: String, out: &mut HashMap<String, St
                 .collect();
 
             if !strings.is_empty() {
-                out.insert(prefix.clone(), strings.join(", "));
+                out.insert(prefix_us.clone(), strings.join(", "));
+                if prefix_dot != prefix_us {
+                    out.insert(prefix_dot.clone(), strings.join(", "));
+                }
             } else {
                 for (i, val) in arr.iter().enumerate() {
-                    flatten_recursive(val, format!("{}_{}", prefix, i), out);
+                    flatten_recursive_dual(
+                        val,
+                        format!("{}_{}", prefix_us, i),
+                        format!("{}.{}", prefix_dot, i),
+                        out,
+                    );
                 }
             }
         }
         _ => {
             let s = val_to_string(value);
-            if !prefix.is_empty() && !s.is_empty() {
-                out.insert(prefix, s);
+            if !prefix_us.is_empty() && !s.is_empty() {
+                out.insert(prefix_us.clone(), s.clone());
+                if prefix_dot != prefix_us {
+                    out.insert(prefix_dot, s);
+                }
             }
         }
     }
