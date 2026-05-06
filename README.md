@@ -221,9 +221,9 @@ muninn -e ./evidence/ --anomalies                              # console + auto-
 muninn -e ./evidence/ --anomalies anomalies.json               # save as JSON
 muninn -e ./evidence/ --anomalies anomalies.html               # save as HTML
 
-# IOC extraction
-muninn -e ./evidence/ --ioc-extract                            # console + auto-save .txt
-muninn -e ./evidence/ --ioc-extract iocs.html                  # save as HTML
+# IOC extraction (console + auto-save TXT/CSV/HTML)
+muninn -e ./evidence/ --ioc-extract
+muninn -e ./evidence/ --ioc-extract iocs.html                  # explicit output filename
 
 # IOC enrichment — registration-free feeds (CIRCL Hashlookup + Team Cymru MHR)
 muninn -e ./evidence/ --ioc-extract --enrich-free
@@ -238,8 +238,31 @@ muninn -e ./evidence/ --ioc-extract --vt-key YOUR_VT_KEY
 muninn -e ./evidence/ --ioc-extract --abuseipdb-key YOUR_ABUSEIPDB_KEY
 muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_OPENTIP_KEY
 
-# Kaspersky OpenTIP deep check (parallel, detailed reports: TXT + HTML + JSON)
-muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY               # check all IOC types
+# Combined (recommended) — every available provider in one pass, parallel
+muninn -e ./evidence/ --ioc-extract --enrich-free \
+  --opentip-key YOUR_OPENTIP_KEY \
+  --abuse-ch-key YOUR_ABUSE_CH_KEY \
+  --vt-key YOUR_VT_KEY \
+  --abuseipdb-key YOUR_ABUSEIPDB_KEY
+
+# Tune parallelism (default 8 workers; per-provider rate-limits clamp lower
+# when needed: VirusTotal forced to 1, AbuseIPDB to 2, others honour the value)
+muninn -e ./evidence/ --ioc-extract --enrich-free --enrich-threads 16
+muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_KEY --enrich-threads 4
+
+# Cap OpenTIP queries explicitly (default: unlimited; stops on 429)
+muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_KEY --opentip-max 200
+
+# Re-run enrichment on a previously-saved IOC CSV WITHOUT re-parsing evidence.
+# Iterate provider keys / thread counts cheaply; output is .enriched.{txt,json,html}
+# alongside the input CSV with clickable pivot links to OpenTIP, VirusTotal,
+# AbuseIPDB, MalwareBazaar, and URLhaus per IOC.
+muninn --enrich-from muninn_iocs_2026-05-06.csv --enrich-free
+muninn --enrich-from muninn_iocs_2026-05-06.csv \
+  --opentip-key YOUR_KEY --abuse-ch-key YOUR_AC_KEY --enrich-threads 16
+
+# Kaspersky OpenTIP deep check (separate code path with parallel HTTP, detailed reports)
+muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY               # all IOC types
 muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY --opentip-types hash        # hashes only
 muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY --opentip-types ip          # IPs only
 muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY --opentip-types hash,ip     # hashes + IPs
@@ -1175,10 +1198,13 @@ muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-typ
 | **Kill chain** | `--killchain [FILE]` | ASCII-визуализация по тактикам |
 | **Таймлайн атаки** | `--timeline [FILE]` | Хронология детектов |
 | **Детекция аномалий** | `--anomalies [FILE]` | Редкие процессы, нетипичное время логона, подозрительные parent→child, обнаружение брутфорса, оценка обфускации команд |
-| **Извлечение IOC** | `--ioc-extract [FILE]` | IP, домены, URL, хэши, email, пути, реестр, службы, задачи, пайпы |
-| **Обогащение IOC** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP |
+| **Извлечение IOC** | `--ioc-extract [FILE]` | IP (v4/v6), домены, URL, хэши (MD5/SHA1/SHA256), email, пути, реестр, службы, задачи, пайпы |
+| **Обогащение IOC** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` / `--abuse-ch-key` / `--enrich-free` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP, abuse.ch (URLhaus + ThreatFox + MalwareBazaar), CIRCL Hashlookup + Team Cymru MHR без регистрации. Все провайдеры выполняются параллельно (default 8 worker'ов, конфигурируется `--enrich-threads`). Прогресс-бар в одну строку с ETA |
+| **Re-enrich без перепарсинга** | `--enrich-from <CSV>` | Перезапуск обогащения на ранее сохранённом IOC-CSV без re-parse EVTX. Idempotent, удобно для итераций ключей и thread-counts |
+| **HTML-отчёт обогащения** | *(автоматически)* | `*.enriched.html` рядом с CSV — sortable таблица с цветными verdict-бейджами (RED/YELLOW/GREEN/GREY/error) и кликабельными pivot-ссылками: hash → OpenTIP/VirusTotal/MalwareBazaar; IP → OpenTIP/AbuseIPDB/VirusTotal; domain → OpenTIP/VirusTotal/URLhaus; URL → OpenTIP/URLhaus |
 | **Глубокая проверка OpenTIP** | `--opentip-check <KEY>` | Полный анализ через Kaspersky OpenTIP: отчёты TXT/HTML/JSON, параллельные запросы |
 | **Фильтр типов OpenTIP** | `--opentip-types hash,ip,domain,url` | Проверять только указанные типы IOC |
+| **Параллельность обогащения** | `--enrich-threads N` | Конкурентные worker'ы для всех IOC-провайдеров (default 8, max 32). Per-provider clamps: VirusTotal=1, AbuseIPDB=2, остальные используют значение полностью |
 | **Анализ логонов** | `--login-analysis [FILE]` | Аутентификация: brute force, нетипичные часы, lateral movement, privilege escalation |
 | **Executive summary** | `--summary [FILE]` | Вердикт (Clean / Suspicious / Compromised / Breach) и рекомендации |
 | **Целостность улик** | *(авто)* | SHA-256 исходных файлов, попадает в JSON-отчёт |

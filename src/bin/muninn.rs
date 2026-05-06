@@ -435,6 +435,18 @@ fn level_color(level: &str) -> colored::ColoredString {
     }
 }
 
+/// `Send + Sync` progress callback used by every enricher.
+/// Called as `cb(done, total)` after each request.
+#[cfg(feature = "ioc-enrich")]
+pub type EnrichProgressCb<'a> = dyn Fn(usize, usize) + Send + Sync + 'a;
+
+/// Closure shape for the `run_with_pb` helper — accepts the progress
+/// callback, returns the provider's enrichment result. Type alias keeps
+/// clippy::type_complexity happy across two call-sites.
+#[cfg(feature = "ioc-enrich")]
+pub type EnrichRunner<'a> =
+    dyn Fn(&EnrichProgressCb<'_>) -> anyhow::Result<Vec<muninn::ioc::EnrichedIoc>> + 'a;
+
 /// Build an in-place single-line progress bar for an enrichment provider.
 /// The template renders as: "  ▶ <provider> [██████ ] 12/100 12% — eta 1m23s"
 /// and updates without scrolling. The total may not be known when the bar is
@@ -488,53 +500,25 @@ fn enrich_from_csv_main(
         );
     }
 
-    let try_provider = |name: &str,
-                        run: &dyn Fn() -> Result<Vec<muninn::ioc::EnrichedIoc>>|
-     -> Vec<muninn::ioc::EnrichedIoc> {
-        if !cli.quiet {
-            println!("  {} {}...", "▶".cyan(), name);
-        }
-        match run() {
-            Ok(v) => v,
-            Err(e) => {
-                if !cli.quiet {
-                    eprintln!("  {} {} failed: {}", "✗".red(), name, e);
-                }
-                Vec::new()
-            }
-        }
-    };
+    let workers = cli.enrich_threads.max(1);
 
-    let mut all_enriched: Vec<muninn::ioc::EnrichedIoc> = Vec::new();
-
-    if let Some(vt) = cli.vt_key.as_deref() {
-        all_enriched.extend(try_provider("VirusTotal", &|| {
-            muninn::ioc::enrich_virustotal(&iocs, vt)
-        }));
-    }
-    if let Some(ab) = cli.abuseipdb_key.as_deref() {
-        all_enriched.extend(try_provider("AbuseIPDB", &|| {
-            muninn::ioc::enrich_abuseipdb(&iocs, ab)
-        }));
-    }
-    if let Some(op) = cli.opentip_key.as_deref() {
-        let cap = cli.opentip_max.max(1);
-        let workers = cli.enrich_threads.max(1);
+    // Single helper that wires every provider to its own indicatif progress
+    // bar (single line, in-place), surfaces errors visibly, and uses the
+    // provider-specific `_parallel` API. Each provider's _parallel function
+    // enforces its own internal worker cap if its rate-limit demands it
+    // (VT clamps to 1, AbuseIPDB to 2; rest honour the user's --enrich-threads).
+    let run_with_pb = |label: &str, call: &EnrichRunner<'_>| -> Vec<muninn::ioc::EnrichedIoc> {
         if !cli.quiet {
-            println!(
-                "  {} Kaspersky OpenTIP ({} workers)...",
-                "▶".cyan(),
-                workers
-            );
+            println!("  {} {}...", "▶".cyan(), label);
         }
         let pb = if cli.quiet {
             None
         } else {
-            Some(make_enrich_pb("OpenTIP"))
+            Some(make_enrich_pb(label))
         };
         let result = {
             let pb_ref = pb.as_ref();
-            muninn::ioc::enrich_opentip_parallel(&iocs, op, cap, workers, &move |done, total| {
+            call(&move |done, total| {
                 if let Some(p) = pb_ref {
                     if p.length() != Some(total as u64) {
                         p.set_length(total as u64);
@@ -547,31 +531,51 @@ fn enrich_from_csv_main(
             p.finish_and_clear();
         }
         match result {
-            Ok(v) => all_enriched.extend(v),
+            Ok(v) => v,
             Err(e) => {
                 if !cli.quiet {
-                    eprintln!("  {} OpenTIP failed: {}", "✗".red(), e);
+                    eprintln!("  {} {} failed: {}", "✗".red(), label, e);
                 }
+                Vec::new()
             }
         }
+    };
+
+    let mut all_enriched: Vec<muninn::ioc::EnrichedIoc> = Vec::new();
+
+    if let Some(vt) = cli.vt_key.as_deref() {
+        all_enriched.extend(run_with_pb("VirusTotal", &|cb| {
+            muninn::ioc::enrich_virustotal_parallel(&iocs, vt, workers, cb)
+        }));
+    }
+    if let Some(ab) = cli.abuseipdb_key.as_deref() {
+        all_enriched.extend(run_with_pb("AbuseIPDB", &|cb| {
+            muninn::ioc::enrich_abuseipdb_parallel(&iocs, ab, workers, cb)
+        }));
+    }
+    if let Some(op) = cli.opentip_key.as_deref() {
+        let cap = cli.opentip_max.max(1);
+        all_enriched.extend(run_with_pb("Kaspersky OpenTIP", &|cb| {
+            muninn::ioc::enrich_opentip_parallel(&iocs, op, cap, workers, cb)
+        }));
     }
     if let Some(ach) = cli.abuse_ch_key.as_deref() {
-        all_enriched.extend(try_provider("abuse.ch URLhaus", &|| {
-            muninn::ioc::enrich_urlhaus(&iocs, ach)
+        all_enriched.extend(run_with_pb("abuse.ch URLhaus", &|cb| {
+            muninn::ioc::enrich_urlhaus_parallel(&iocs, ach, workers, cb)
         }));
-        all_enriched.extend(try_provider("abuse.ch ThreatFox", &|| {
-            muninn::ioc::enrich_threatfox(&iocs, ach)
+        all_enriched.extend(run_with_pb("abuse.ch ThreatFox", &|cb| {
+            muninn::ioc::enrich_threatfox_parallel(&iocs, ach, workers, cb)
         }));
-        all_enriched.extend(try_provider("abuse.ch MalwareBazaar", &|| {
-            muninn::ioc::enrich_malwarebazaar(&iocs, ach)
+        all_enriched.extend(run_with_pb("abuse.ch MalwareBazaar", &|cb| {
+            muninn::ioc::enrich_malwarebazaar_parallel(&iocs, ach, workers, cb)
         }));
     }
     if cli.enrich_free {
-        all_enriched.extend(try_provider("CIRCL Hashlookup", &|| {
-            muninn::ioc::enrich_circl_hashlookup(&iocs)
+        all_enriched.extend(run_with_pb("CIRCL Hashlookup", &|cb| {
+            muninn::ioc::enrich_circl_hashlookup_parallel(&iocs, workers, cb)
         }));
-        all_enriched.extend(try_provider("Team Cymru MHR", &|| {
-            muninn::ioc::enrich_cymru_mhr(&iocs)
+        all_enriched.extend(run_with_pb("Team Cymru MHR", &|cb| {
+            muninn::ioc::enrich_cymru_mhr_parallel(&iocs, workers, cb)
         }));
     }
 
@@ -2895,36 +2899,62 @@ fn main() -> Result<()> {
                 || cli.abuse_ch_key.is_some()
                 || cli.enrich_free;
 
-            if let Some(ref vt_key) = cli.vt_key {
-                if !cli.quiet {
-                    println!("  {} Enriching IOCs via VirusTotal...", "▶".cyan());
-                }
-                match muninn::ioc::enrich_virustotal(&iocs, vt_key) {
-                    Ok(enriched) => all_enriched.extend(enriched),
-                    Err(e) => {
-                        if !cli.quiet {
-                            eprintln!("  {} VT enrichment failed: {}", "✗".red(), e);
+            let workers = cli.enrich_threads.max(1);
+
+            // Single helper that wires every provider to its own indicatif
+            // progress bar (single line, in-place) and surfaces errors visibly.
+            // Each `_parallel` enrichment fn enforces its own internal worker
+            // cap when its provider's rate-limit demands one (VT clamps to 1,
+            // AbuseIPDB to 2; rest honour the user's --enrich-threads).
+            let run_with_pb =
+                |label: &str, call: &EnrichRunner<'_>| -> Vec<muninn::ioc::EnrichedIoc> {
+                    if !cli.quiet {
+                        println!("  {} Enriching IOCs via {}...", "▶".cyan(), label);
+                    }
+                    let pb = if cli.quiet {
+                        None
+                    } else {
+                        Some(make_enrich_pb(label))
+                    };
+                    let result = {
+                        let pb_ref = pb.as_ref();
+                        call(&move |done, total| {
+                            if let Some(p) = pb_ref {
+                                if p.length() != Some(total as u64) {
+                                    p.set_length(total as u64);
+                                }
+                                p.set_position(done as u64);
+                            }
+                        })
+                    };
+                    if let Some(p) = pb {
+                        p.finish_and_clear();
+                    }
+                    match result {
+                        Ok(v) => v,
+                        Err(e) => {
+                            if !cli.quiet {
+                                eprintln!("  {} {} failed: {}", "✗".red(), label, e);
+                            }
+                            Vec::new()
                         }
                     }
-                }
+                };
+
+            if let Some(ref vt_key) = cli.vt_key {
+                all_enriched.extend(run_with_pb("VirusTotal", &|cb| {
+                    muninn::ioc::enrich_virustotal_parallel(&iocs, vt_key, workers, cb)
+                }));
             }
 
             if let Some(ref abuse_key) = cli.abuseipdb_key {
-                if !cli.quiet {
-                    println!("  {} Enriching IPs via AbuseIPDB...", "▶".cyan());
-                }
-                match muninn::ioc::enrich_abuseipdb(&iocs, abuse_key) {
-                    Ok(enriched) => all_enriched.extend(enriched),
-                    Err(e) => {
-                        if !cli.quiet {
-                            eprintln!("  {} AbuseIPDB enrichment failed: {}", "✗".red(), e);
-                        }
-                    }
-                }
+                all_enriched.extend(run_with_pb("AbuseIPDB", &|cb| {
+                    muninn::ioc::enrich_abuseipdb_parallel(&iocs, abuse_key, workers, cb)
+                }));
             }
 
             if let Some(ref opentip_key) = cli.opentip_key {
-                let workers = cli.enrich_threads.max(1);
+                let cap = cli.opentip_max.max(1);
                 if !cli.quiet {
                     let cap_msg = if cli.opentip_max == usize::MAX {
                         "no cap".to_string()
@@ -2932,95 +2962,40 @@ fn main() -> Result<()> {
                         format!("cap: {}", cli.opentip_max)
                     };
                     println!(
-                        "  {} Enriching IOCs via Kaspersky OpenTIP ({}, {} workers)...",
-                        "▶".cyan(),
+                        "  {} (OpenTIP: {}, {} workers)",
+                        "ℹ".cyan(),
                         cap_msg,
                         workers
                     );
                 }
-                let pb = if cli.quiet {
-                    None
-                } else {
-                    Some(make_enrich_pb("OpenTIP"))
-                };
-                let result = {
-                    let pb_ref = pb.as_ref();
-                    muninn::ioc::enrich_opentip_parallel(
-                        &iocs,
-                        opentip_key,
-                        cli.opentip_max.max(1),
-                        workers,
-                        &move |done, total| {
-                            if let Some(p) = pb_ref {
-                                if p.length() != Some(total as u64) {
-                                    p.set_length(total as u64);
-                                }
-                                p.set_position(done as u64);
-                            }
-                        },
-                    )
-                };
-                if let Some(p) = pb {
-                    p.finish_and_clear();
-                }
-                match result {
-                    Ok(enriched) => all_enriched.extend(enriched),
-                    Err(e) => {
-                        if !cli.quiet {
-                            eprintln!("  {} OpenTIP enrichment failed: {}", "✗".red(), e);
-                        }
-                    }
-                }
+                all_enriched.extend(run_with_pb("Kaspersky OpenTIP", &|cb| {
+                    muninn::ioc::enrich_opentip_parallel(&iocs, opentip_key, cap, workers, cb)
+                }));
             }
 
             // Registration-free feeds (no API key, no signup): CIRCL
-            // Hashlookup and Team Cymru MHR (via DoH). These give reputation
-            // verdicts on hashes without any external account.
-            type KeylessFeed =
-                fn(&[muninn::ioc::Ioc]) -> anyhow::Result<Vec<muninn::ioc::EnrichedIoc>>;
-            type KeyedFeed =
-                fn(&[muninn::ioc::Ioc], &str) -> anyhow::Result<Vec<muninn::ioc::EnrichedIoc>>;
+            // Hashlookup and Team Cymru MHR (via DoH).
             if cli.enrich_free {
-                let keyless_feeds: &[(&str, KeylessFeed)] = &[
-                    ("CIRCL Hashlookup", muninn::ioc::enrich_circl_hashlookup),
-                    ("Team Cymru MHR (DoH)", muninn::ioc::enrich_cymru_mhr),
-                ];
-                for (display, func) in keyless_feeds {
-                    if !cli.quiet {
-                        println!("  {} Enriching IOCs via {}...", "▶".cyan(), display);
-                    }
-                    match func(&iocs) {
-                        Ok(enriched) => all_enriched.extend(enriched),
-                        Err(e) => {
-                            if !cli.quiet {
-                                eprintln!("  {} {} failed: {}", "✗".red(), display, e);
-                            }
-                        }
-                    }
-                }
+                all_enriched.extend(run_with_pb("CIRCL Hashlookup", &|cb| {
+                    muninn::ioc::enrich_circl_hashlookup_parallel(&iocs, workers, cb)
+                }));
+                all_enriched.extend(run_with_pb("Team Cymru MHR (DoH)", &|cb| {
+                    muninn::ioc::enrich_cymru_mhr_parallel(&iocs, workers, cb)
+                }));
             }
 
             // abuse.ch family — URLhaus, ThreatFox, MalwareBazaar. Free key
             // but requires a 1-minute signup (https://auth.abuse.ch).
             if let Some(ref ach_key) = cli.abuse_ch_key {
-                let abuse_feeds: &[(&str, KeyedFeed)] = &[
-                    ("abuse.ch URLhaus", muninn::ioc::enrich_urlhaus),
-                    ("abuse.ch ThreatFox", muninn::ioc::enrich_threatfox),
-                    ("abuse.ch MalwareBazaar", muninn::ioc::enrich_malwarebazaar),
-                ];
-                for (display, func) in abuse_feeds {
-                    if !cli.quiet {
-                        println!("  {} Enriching IOCs via {}...", "▶".cyan(), display);
-                    }
-                    match func(&iocs, ach_key) {
-                        Ok(enriched) => all_enriched.extend(enriched),
-                        Err(e) => {
-                            if !cli.quiet {
-                                eprintln!("  {} {} failed: {}", "✗".red(), display, e);
-                            }
-                        }
-                    }
-                }
+                all_enriched.extend(run_with_pb("abuse.ch URLhaus", &|cb| {
+                    muninn::ioc::enrich_urlhaus_parallel(&iocs, ach_key, workers, cb)
+                }));
+                all_enriched.extend(run_with_pb("abuse.ch ThreatFox", &|cb| {
+                    muninn::ioc::enrich_threatfox_parallel(&iocs, ach_key, workers, cb)
+                }));
+                all_enriched.extend(run_with_pb("abuse.ch MalwareBazaar", &|cb| {
+                    muninn::ioc::enrich_malwarebazaar_parallel(&iocs, ach_key, workers, cb)
+                }));
             }
 
             // Always emit a summary even when there are zero results — the user

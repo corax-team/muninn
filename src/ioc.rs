@@ -1388,20 +1388,114 @@ pub struct EnrichedIoc {
     pub raw_response: Option<String>,
 }
 
+/// Shared parallel runner for IOC-enrichment providers. The provider supplies
+/// a pre-filtered slice (each `&Ioc` is something it actually knows how to
+/// query — type filtering happens in the caller) plus the per-IOC closure
+/// `query_one`. The runner handles:
+///   - dedicated rayon thread pool sized by `workers` (clamped 1..=32)
+///   - per-request rate-limit `sleep_ms` (set per-provider)
+///   - shared `AtomicBool` stop signal — closure flips it on auth/quota errors
+///     so the rest of the worker pool drains cheaply instead of hammering a
+///     dead key
+///   - atomic progress counter that calls `on_progress(done, total)` after
+///     every request — wires straight into `make_enrich_pb` in muninn.rs
+///
+/// Closure return: `Some(record)` to land in the result vec, `None` to skip
+/// silently (e.g. the request was a transient log-only failure).
+#[cfg(feature = "ioc-enrich")]
+pub fn run_parallel_enrichment<F>(
+    iocs_to_query: &[&Ioc],
+    workers: usize,
+    sleep_ms: u64,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+    query_one: F,
+) -> Result<Vec<EnrichedIoc>>
+where
+    F: Fn(&Ioc, &std::sync::atomic::AtomicBool) -> Option<EnrichedIoc> + Send + Sync,
+{
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let total = iocs_to_query.len();
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers.clamp(1, 32))
+        .build()
+        .map_err(|e| anyhow::anyhow!("rayon pool: {}", e))?;
+
+    let progress = AtomicUsize::new(0);
+    let stop_now = AtomicBool::new(false);
+
+    let results: Vec<EnrichedIoc> = pool.install(|| {
+        iocs_to_query
+            .par_iter()
+            .filter_map(|ioc| {
+                if stop_now.load(Ordering::Relaxed) {
+                    return None;
+                }
+                let outcome = query_one(ioc, &stop_now);
+                let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                on_progress(done, total);
+                if sleep_ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+                }
+                outcome
+            })
+            .collect()
+    });
+    Ok(results)
+}
+
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_virustotal(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
-    let mut enriched = Vec::new();
+    enrich_virustotal_parallel(iocs, api_key, 1, &|_, _| {})
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_virustotal_parallel(
+    iocs: &[Ioc],
+    api_key: &str,
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
+    // VirusTotal free tier: 4 lookups/MINUTE. Parallelism past 1 worker hits
+    // 429 immediately on free keys. Clamp to 1 by default; paid users with
+    // higher quotas can pass --enrich-threads-vt to opt into more (currently
+    // we just hard-clamp here — change once VT-paid usage is observed).
+    let workers = workers.min(1);
+    let api_key = api_key.to_string();
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
         .build();
+    let queryable: Vec<&Ioc> = iocs
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.ioc_type,
+                IocType::Ipv4
+                    | IocType::Domain
+                    | IocType::Url
+                    | IocType::Md5
+                    | IocType::Sha1
+                    | IocType::Sha256
+            )
+        })
+        .take(25)
+        .collect();
 
-    for ioc in iocs.iter().take(25) {
+    run_parallel_enrichment(&queryable, workers, 15500, on_progress, |ioc, stop| {
+        use std::sync::atomic::Ordering;
         let endpoint = match ioc.ioc_type {
             IocType::Ipv4 => format!(
                 "https://www.virustotal.com/api/v3/ip_addresses/{}",
                 ioc.value
             ),
-            IocType::Domain => format!("https://www.virustotal.com/api/v3/domains/{}", ioc.value),
+            IocType::Domain => {
+                format!("https://www.virustotal.com/api/v3/domains/{}", ioc.value)
+            }
             IocType::Url => {
                 let url_id = base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -1412,52 +1506,59 @@ pub fn enrich_virustotal(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>
             IocType::Md5 | IocType::Sha1 | IocType::Sha256 => {
                 format!("https://www.virustotal.com/api/v3/files/{}", ioc.value)
             }
-            _ => continue,
+            _ => return None,
         };
-
-        match agent.get(&endpoint).set("x-apikey", api_key).call() {
+        match agent.get(&endpoint).set("x-apikey", &api_key).call() {
             Ok(resp) => {
                 let body = resp.into_string().unwrap_or_default();
                 let (verdict, score, details) = parse_vt_response(&body, &ioc.ioc_type);
-                enriched.push(EnrichedIoc {
-                    ioc: ioc.clone(),
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
                     verdict,
                     source: "VirusTotal".into(),
                     details,
                     score: Some(score),
                     raw_response: Some(body),
-                });
+                })
             }
-            Err(ureq::Error::Status(404, _)) => {
-                enriched.push(EnrichedIoc {
-                    ioc: ioc.clone(),
-                    verdict: "unknown".into(),
+            Err(ureq::Error::Status(404, _)) => Some(EnrichedIoc {
+                ioc: (*ioc).clone(),
+                verdict: "unknown".into(),
+                source: "VirusTotal".into(),
+                details: "Not found in VT database".into(),
+                score: None,
+                raw_response: None,
+            }),
+            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                log::warn!("VirusTotal auth failed (401/403) — verify --vt-key");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
                     source: "VirusTotal".into(),
-                    details: "Not found in VT database".into(),
+                    details: "Authentication failed (401/403)".into(),
                     score: None,
                     raw_response: None,
-                });
+                })
             }
             Err(ureq::Error::Status(429, _)) => {
-                enriched.push(EnrichedIoc {
-                    ioc: ioc.clone(),
-                    verdict: "unknown".into(),
+                log::warn!("VirusTotal rate-limited (429); stopping VT enrichment");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
                     source: "VirusTotal".into(),
                     details: "Rate limit exceeded".into(),
                     score: None,
                     raw_response: None,
-                });
-                break;
+                })
             }
             Err(e) => {
                 log::debug!("VT request failed for {}: {}", ioc.value, e);
+                None
             }
         }
-
-        std::thread::sleep(std::time::Duration::from_millis(15500));
-    }
-
-    Ok(enriched)
+    })
 }
 
 #[cfg(feature = "ioc-enrich")]
@@ -1554,26 +1655,39 @@ fn parse_vt_response(body: &str, ioc_type: &IocType) -> (String, f64, String) {
 
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_abuseipdb(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
-    let mut enriched = Vec::new();
+    enrich_abuseipdb_parallel(iocs, api_key, 1, &|_, _| {})
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_abuseipdb_parallel(
+    iocs: &[Ioc],
+    api_key: &str,
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
+    // AbuseIPDB free tier: 1000 lookups/day with ~1 QPS sustained. Two workers
+    // doubles throughput while staying well under the per-second ceiling
+    // (each sleeps 1100ms after a request, so aggregate ≈ 2 QPS).
+    let workers = workers.min(2);
+    let api_key = api_key.to_string();
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
         .build();
-
     let ip_iocs: Vec<&Ioc> = iocs
         .iter()
         .filter(|i| i.ioc_type == IocType::Ipv4)
         .take(25)
         .collect();
 
-    for ioc in &ip_iocs {
+    run_parallel_enrichment(&ip_iocs, workers, 1100, on_progress, |ioc, stop| {
+        use std::sync::atomic::Ordering;
         let url = format!(
             "https://api.abuseipdb.com/api/v2/check?ipAddress={}&maxAgeInDays=90",
             ioc.value
         );
-
         match agent
             .get(&url)
-            .set("Key", api_key)
+            .set("Key", &api_key)
             .set("Accept", "application/json")
             .call()
         {
@@ -1586,7 +1700,6 @@ pub fn enrich_abuseipdb(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>>
                 let total_reports = data["totalReports"].as_u64().unwrap_or(0);
                 let isp = data["isp"].as_str().unwrap_or("unknown");
                 let country = data["countryCode"].as_str().unwrap_or("??");
-
                 let verdict = if abuse_score >= 75 {
                     "malicious"
                 } else if abuse_score >= 25 {
@@ -1594,8 +1707,7 @@ pub fn enrich_abuseipdb(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>>
                 } else {
                     "clean"
                 };
-
-                enriched.push(EnrichedIoc {
+                Some(EnrichedIoc {
                     ioc: (*ioc).clone(),
                     verdict: verdict.into(),
                     source: "AbuseIPDB".into(),
@@ -1605,28 +1717,38 @@ pub fn enrich_abuseipdb(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>>
                     ),
                     score: Some(abuse_score as f64),
                     raw_response: Some(body),
-                });
+                })
+            }
+            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                log::warn!("AbuseIPDB auth failed (401/403) — verify --abuseipdb-key");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "AbuseIPDB".into(),
+                    details: "Authentication failed (401/403)".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
             Err(ureq::Error::Status(429, _)) => {
-                enriched.push(EnrichedIoc {
+                log::warn!("AbuseIPDB rate-limited (429); stopping enrichment");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
                     ioc: (*ioc).clone(),
-                    verdict: "unknown".into(),
+                    verdict: "error".into(),
                     source: "AbuseIPDB".into(),
                     details: "Rate limit exceeded".into(),
                     score: None,
                     raw_response: None,
-                });
-                break;
+                })
             }
             Err(e) => {
                 log::debug!("AbuseIPDB request failed for {}: {}", ioc.value, e);
+                None
             }
         }
-
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-    }
-
-    Ok(enriched)
+    })
 }
 
 #[cfg(feature = "ioc-enrich")]
@@ -1914,25 +2036,47 @@ fn pct_encode(s: &str) -> String {
 /// feed entirely.
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_urlhaus(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> {
+    enrich_urlhaus_parallel(iocs, auth_key, 1, &|_, _| {})
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_urlhaus_parallel(
+    iocs: &[Ioc],
+    auth_key: &str,
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
     if auth_key.is_empty() {
         return Ok(Vec::new());
     }
     let agent = build_free_agent();
-    let mut out = Vec::new();
-    for ioc in iocs.iter().take(100) {
+    let auth_key = auth_key.to_string();
+    let queryable: Vec<&Ioc> = iocs
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.ioc_type,
+                IocType::Url | IocType::Domain | IocType::Ipv4 | IocType::Sha256 | IocType::Md5
+            )
+        })
+        .take(100)
+        .collect();
+
+    run_parallel_enrichment(&queryable, workers, 150, on_progress, |ioc, stop| {
+        use std::sync::atomic::Ordering;
         let (endpoint, key) = match ioc.ioc_type {
             IocType::Url => ("https://urlhaus-api.abuse.ch/v1/url/", "url"),
             IocType::Domain | IocType::Ipv4 => ("https://urlhaus-api.abuse.ch/v1/host/", "host"),
             IocType::Sha256 | IocType::Md5 => {
                 ("https://urlhaus-api.abuse.ch/v1/payload/", "sha256_hash")
             }
-            _ => continue,
+            _ => return None,
         };
         let body = format!("{}={}", key, pct_encode(&ioc.value));
         match agent
             .post(endpoint)
             .set("Content-Type", "application/x-www-form-urlencoded")
-            .set("Auth-Key", auth_key)
+            .set("Auth-Key", &auth_key)
             .send_string(&body)
         {
             Ok(resp) => {
@@ -1970,58 +2114,91 @@ pub fn enrich_urlhaus(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> 
                     "no_results" => ("benign".to_string(), "URLhaus: no record".to_string()),
                     other => ("unknown".to_string(), format!("URLhaus: {other}")),
                 };
-                out.push(EnrichedIoc {
-                    ioc: ioc.clone(),
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
                     verdict,
                     source: "URLhaus".into(),
                     details,
                     score: None,
                     raw_response: Some(raw),
-                });
+                })
             }
             Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
-                eprintln!(
-                    "  \u{2717} URLhaus returned Unauthorized \u{2014} verify --abuse-ch-key (free signup at https://auth.abuse.ch)"
+                log::warn!(
+                    "URLhaus auth failed (401/403) — verify --abuse-ch-key (free signup at https://auth.abuse.ch)"
                 );
-                break;
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "URLhaus".into(),
+                    details: "Authentication failed (401/403)".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
             Err(ureq::Error::Status(429, _)) => {
-                eprintln!("  \u{26A0} URLhaus rate-limited (429); stopping URLhaus enrichment");
-                break;
+                log::warn!("URLhaus rate-limited (429); stopping URLhaus enrichment");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "URLhaus".into(),
+                    details: "Rate limit exceeded".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
-            Err(e) => log::debug!("URLhaus request failed for {}: {}", ioc.value, e),
+            Err(e) => {
+                log::debug!("URLhaus request failed for {}: {}", ioc.value, e);
+                None
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
-    }
-    Ok(out)
+    })
 }
 
 /// abuse.ch ThreatFox — generic IOC search across domains, IPs, URLs and hashes.
 /// Requires an `Auth-Key` (free, see [`enrich_urlhaus`] for details).
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_threatfox(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> {
+    enrich_threatfox_parallel(iocs, auth_key, 1, &|_, _| {})
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_threatfox_parallel(
+    iocs: &[Ioc],
+    auth_key: &str,
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
     if auth_key.is_empty() {
         return Ok(Vec::new());
     }
     let agent = build_free_agent();
-    let mut out = Vec::new();
-    for ioc in iocs.iter().take(100) {
-        if !matches!(
-            ioc.ioc_type,
-            IocType::Ipv4
-                | IocType::Domain
-                | IocType::Url
-                | IocType::Md5
-                | IocType::Sha1
-                | IocType::Sha256
-        ) {
-            continue;
-        }
+    let auth_key = auth_key.to_string();
+    let queryable: Vec<&Ioc> = iocs
+        .iter()
+        .filter(|i| {
+            matches!(
+                i.ioc_type,
+                IocType::Ipv4
+                    | IocType::Domain
+                    | IocType::Url
+                    | IocType::Md5
+                    | IocType::Sha1
+                    | IocType::Sha256
+            )
+        })
+        .take(100)
+        .collect();
+
+    run_parallel_enrichment(&queryable, workers, 150, on_progress, |ioc, stop| {
+        use std::sync::atomic::Ordering;
         let body = serde_json::json!({"query": "search_ioc", "search_term": ioc.value}).to_string();
         match agent
             .post("https://threatfox-api.abuse.ch/api/v1/")
             .set("Content-Type", "application/json")
-            .set("Auth-Key", auth_key)
+            .set("Auth-Key", &auth_key)
             .send_string(&body)
         {
             Ok(resp) => {
@@ -2034,8 +2211,10 @@ pub fn enrich_threatfox(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>
                     .unwrap_or("");
                 let (verdict, details, score) = match status {
                     "ok" => {
-                        let data = json.get("data").and_then(|v| v.as_array());
-                        let entry = data.and_then(|a| a.first());
+                        let entry = json
+                            .get("data")
+                            .and_then(|v| v.as_array())
+                            .and_then(|a| a.first());
                         let malware = entry
                             .and_then(|e| e.get("malware"))
                             .and_then(|v| v.as_str())
@@ -2061,50 +2240,79 @@ pub fn enrich_threatfox(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>
                     ),
                     other => ("unknown".to_string(), format!("ThreatFox: {other}"), None),
                 };
-                out.push(EnrichedIoc {
-                    ioc: ioc.clone(),
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
                     verdict,
                     source: "ThreatFox".into(),
                     details,
                     score,
                     raw_response: Some(raw),
-                });
+                })
             }
             Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
-                eprintln!(
-                    "  \u{2717} ThreatFox returned Unauthorized \u{2014} verify --abuse-ch-key (free signup at https://auth.abuse.ch)"
-                );
-                break;
+                log::warn!("ThreatFox auth failed (401/403) — verify --abuse-ch-key");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "ThreatFox".into(),
+                    details: "Authentication failed (401/403)".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
             Err(ureq::Error::Status(429, _)) => {
-                eprintln!("  \u{26A0} ThreatFox rate-limited (429); stopping ThreatFox enrichment");
-                break;
+                log::warn!("ThreatFox rate-limited (429); stopping enrichment");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "ThreatFox".into(),
+                    details: "Rate limit exceeded".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
-            Err(e) => log::debug!("ThreatFox request failed for {}: {}", ioc.value, e),
+            Err(e) => {
+                log::debug!("ThreatFox request failed for {}: {}", ioc.value, e);
+                None
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
-    }
-    Ok(out)
+    })
 }
 
 /// abuse.ch MalwareBazaar — file-hash lookup with malware family attribution.
 /// Requires an `Auth-Key` (free, see [`enrich_urlhaus`] for details).
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_malwarebazaar(iocs: &[Ioc], auth_key: &str) -> Result<Vec<EnrichedIoc>> {
+    enrich_malwarebazaar_parallel(iocs, auth_key, 1, &|_, _| {})
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_malwarebazaar_parallel(
+    iocs: &[Ioc],
+    auth_key: &str,
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
     if auth_key.is_empty() {
         return Ok(Vec::new());
     }
     let agent = build_free_agent();
-    let mut out = Vec::new();
-    for ioc in iocs.iter().take(100) {
-        if !matches!(ioc.ioc_type, IocType::Md5 | IocType::Sha1 | IocType::Sha256) {
-            continue;
-        }
+    let auth_key = auth_key.to_string();
+    let queryable: Vec<&Ioc> = iocs
+        .iter()
+        .filter(|i| matches!(i.ioc_type, IocType::Md5 | IocType::Sha1 | IocType::Sha256))
+        .take(100)
+        .collect();
+
+    run_parallel_enrichment(&queryable, workers, 150, on_progress, |ioc, stop| {
+        use std::sync::atomic::Ordering;
         let body = format!("query=get_info&hash={}", pct_encode(&ioc.value));
         match agent
             .post("https://mb-api.abuse.ch/api/v1/")
             .set("Content-Type", "application/x-www-form-urlencoded")
-            .set("Auth-Key", auth_key)
+            .set("Auth-Key", &auth_key)
             .send_string(&body)
         {
             Ok(resp) => {
@@ -2140,30 +2348,45 @@ pub fn enrich_malwarebazaar(iocs: &[Ioc], auth_key: &str) -> Result<Vec<Enriched
                     ),
                     other => ("unknown".to_string(), format!("MalwareBazaar: {other}")),
                 };
-                out.push(EnrichedIoc {
-                    ioc: ioc.clone(),
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
                     verdict,
                     source: "MalwareBazaar".into(),
                     details,
                     score: None,
                     raw_response: Some(raw),
-                });
+                })
             }
             Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
-                eprintln!(
-                    "  \u{2717} MalwareBazaar returned Unauthorized \u{2014} verify --abuse-ch-key (free signup at https://auth.abuse.ch)"
-                );
-                break;
+                log::warn!("MalwareBazaar auth failed (401/403) — verify --abuse-ch-key");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "MalwareBazaar".into(),
+                    details: "Authentication failed (401/403)".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
             Err(ureq::Error::Status(429, _)) => {
-                eprintln!("  \u{26A0} MalwareBazaar rate-limited (429); stopping enrichment");
-                break;
+                log::warn!("MalwareBazaar rate-limited (429); stopping enrichment");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "MalwareBazaar".into(),
+                    details: "Rate limit exceeded".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
-            Err(e) => log::debug!("MalwareBazaar request failed for {}: {}", ioc.value, e),
+            Err(e) => {
+                log::debug!("MalwareBazaar request failed for {}: {}", ioc.value, e);
+                None
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
-    }
-    Ok(out)
+    })
 }
 
 /// CIRCL Hashlookup — NSRL known-good database plus malware reputation.
@@ -2171,14 +2394,29 @@ pub fn enrich_malwarebazaar(iocs: &[Ioc], auth_key: &str) -> Result<Vec<Enriched
 /// 404 → unknown to the dataset.
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_circl_hashlookup(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
+    enrich_circl_hashlookup_parallel(iocs, 1, &|_, _| {})
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_circl_hashlookup_parallel(
+    iocs: &[Ioc],
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
     let agent = build_free_agent();
-    let mut out = Vec::new();
-    for ioc in iocs.iter().take(150) {
+    let queryable: Vec<&Ioc> = iocs
+        .iter()
+        .filter(|i| matches!(i.ioc_type, IocType::Md5 | IocType::Sha1 | IocType::Sha256))
+        .take(150)
+        .collect();
+
+    run_parallel_enrichment(&queryable, workers, 80, on_progress, |ioc, stop| {
+        use std::sync::atomic::Ordering;
         let (kind, hash) = match ioc.ioc_type {
             IocType::Md5 => ("md5", ioc.value.as_str()),
             IocType::Sha1 => ("sha1", ioc.value.as_str()),
             IocType::Sha256 => ("sha256", ioc.value.as_str()),
-            _ => continue,
+            _ => return None,
         };
         let endpoint = format!("https://hashlookup.circl.lu/lookup/{}/{}", kind, hash);
         match agent
@@ -2218,34 +2456,41 @@ pub fn enrich_circl_hashlookup(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
                         ),
                     )
                 };
-                out.push(EnrichedIoc {
-                    ioc: ioc.clone(),
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
                     verdict,
                     source: "CIRCL Hashlookup".into(),
                     details,
                     score: trust,
                     raw_response: Some(raw),
-                });
+                })
             }
-            Err(ureq::Error::Status(404, _)) => {
-                out.push(EnrichedIoc {
-                    ioc: ioc.clone(),
-                    verdict: "unknown".into(),
+            Err(ureq::Error::Status(404, _)) => Some(EnrichedIoc {
+                ioc: (*ioc).clone(),
+                verdict: "unknown".into(),
+                source: "CIRCL Hashlookup".into(),
+                details: "Not found in NSRL or malware sets".into(),
+                score: None,
+                raw_response: None,
+            }),
+            Err(ureq::Error::Status(429, _)) => {
+                log::warn!("CIRCL Hashlookup rate-limited (429); stopping enrichment");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
                     source: "CIRCL Hashlookup".into(),
-                    details: "Not found in NSRL or malware sets".into(),
+                    details: "Rate limit exceeded".into(),
                     score: None,
                     raw_response: None,
-                });
+                })
             }
-            Err(ureq::Error::Status(429, _)) => {
-                eprintln!("  \u{26A0} CIRCL Hashlookup rate-limited (429); stopping enrichment");
-                break;
+            Err(e) => {
+                log::debug!("CIRCL Hashlookup failed for {}: {}", ioc.value, e);
+                None
             }
-            Err(e) => log::debug!("CIRCL Hashlookup failed for {}: {}", ioc.value, e),
         }
-        std::thread::sleep(std::time::Duration::from_millis(80));
-    }
-    Ok(out)
+    })
 }
 
 /// Team Cymru Malware Hash Registry via Cloudflare DNS-over-HTTPS.
@@ -2254,14 +2499,25 @@ pub fn enrich_circl_hashlookup(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
 /// VT engines flagged the sample. NXDOMAIN means the hash is unknown.
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_cymru_mhr(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
+    enrich_cymru_mhr_parallel(iocs, 1, &|_, _| {})
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_cymru_mhr_parallel(
+    iocs: &[Ioc],
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
     let agent = build_free_agent();
-    let mut out = Vec::new();
-    for ioc in iocs.iter().take(200) {
-        let hash = match ioc.ioc_type {
-            IocType::Md5 | IocType::Sha1 => ioc.value.as_str(),
-            _ => continue,
-        };
-        let qname = format!("{}.malware.hash.cymru.com", hash);
+    let queryable: Vec<&Ioc> = iocs
+        .iter()
+        .filter(|i| matches!(i.ioc_type, IocType::Md5 | IocType::Sha1))
+        .take(200)
+        .collect();
+
+    run_parallel_enrichment(&queryable, workers, 40, on_progress, |ioc, stop| {
+        use std::sync::atomic::Ordering;
+        let qname = format!("{}.malware.hash.cymru.com", ioc.value.as_str());
         let endpoint = format!(
             "https://cloudflare-dns.com/dns-query?name={}&type=TXT",
             pct_encode(&qname)
@@ -2277,15 +2533,14 @@ pub fn enrich_cymru_mhr(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
                     serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null);
                 let status = json.get("Status").and_then(|v| v.as_i64()).unwrap_or(-1);
                 if status == 3 {
-                    out.push(EnrichedIoc {
-                        ioc: ioc.clone(),
+                    return Some(EnrichedIoc {
+                        ioc: (*ioc).clone(),
                         verdict: "unknown".into(),
                         source: "Cymru MHR".into(),
                         details: "MHR: NXDOMAIN (hash unknown)".into(),
                         score: None,
                         raw_response: None,
                     });
-                    continue;
                 }
                 if let Some(answer) = json.get("Answer").and_then(|v| v.as_array()) {
                     if let Some(data) = answer
@@ -2293,7 +2548,6 @@ pub fn enrich_cymru_mhr(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
                         .and_then(|a| a.get("data"))
                         .and_then(|v| v.as_str())
                     {
-                        // Strip surrounding quotes Cloudflare adds for TXT data.
                         let trimmed = data.trim_matches('"');
                         let parts: Vec<&str> = trimmed.split_whitespace().collect();
                         let detection_rate = parts.get(1).and_then(|s| s.parse::<f64>().ok());
@@ -2303,8 +2557,8 @@ pub fn enrich_cymru_mhr(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
                             Some(r) if r > 0.0 => "suspicious",
                             _ => "unknown",
                         };
-                        out.push(EnrichedIoc {
-                            ioc: ioc.clone(),
+                        return Some(EnrichedIoc {
+                            ioc: (*ioc).clone(),
                             verdict: verdict.into(),
                             source: "Cymru MHR".into(),
                             details: format!(
@@ -2315,30 +2569,35 @@ pub fn enrich_cymru_mhr(iocs: &[Ioc]) -> Result<Vec<EnrichedIoc>> {
                             score: detection_rate,
                             raw_response: Some(raw),
                         });
-                        std::thread::sleep(std::time::Duration::from_millis(40));
-                        continue;
                     }
                 }
-                out.push(EnrichedIoc {
-                    ioc: ioc.clone(),
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
                     verdict: "unknown".into(),
                     source: "Cymru MHR".into(),
                     details: "MHR: no TXT data".into(),
                     score: None,
                     raw_response: Some(raw),
-                });
+                })
             }
             Err(ureq::Error::Status(429, _)) => {
-                eprintln!(
-                    "  \u{26A0} Cloudflare DoH rate-limited (429); stopping Cymru MHR enrichment"
-                );
-                break;
+                log::warn!("Cloudflare DoH rate-limited (429); stopping Cymru MHR enrichment");
+                stop.store(true, Ordering::Relaxed);
+                Some(EnrichedIoc {
+                    ioc: (*ioc).clone(),
+                    verdict: "error".into(),
+                    source: "Cymru MHR".into(),
+                    details: "Rate limit exceeded".into(),
+                    score: None,
+                    raw_response: None,
+                })
             }
-            Err(e) => log::debug!("Cymru MHR (DoH) failed for {}: {}", ioc.value, e),
+            Err(e) => {
+                log::debug!("Cymru MHR (DoH) failed for {}: {}", ioc.value, e);
+                None
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(40));
-    }
-    Ok(out)
+    })
 }
 
 pub fn render_enriched(enriched: &[EnrichedIoc]) -> String {
