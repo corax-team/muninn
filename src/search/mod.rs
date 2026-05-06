@@ -212,15 +212,46 @@ impl SearchEngine {
             self.conn.execute(&sql, [])?;
             self.columns = new_columns;
         } else {
+            // Case-insensitive existence check — SQLite treats column names that
+            // way internally, and a previous batch may have added "FthEnabled..."
+            // while this batch saw "FTHEnabled...". Without this, a duplicate
+            // ALTER fires, fails, but self.columns still grows — and the next
+            // INSERT references a column SQLite doesn't have under that case.
             for col in &new_columns {
-                if !self.columns.contains(col) {
-                    let sql = format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" TEXT", TABLE, col);
-                    if let Err(e) = self.conn.execute(&sql, []) {
-                        debug!("Column '{}' may already exist: {}", col, e);
+                if self.columns.iter().any(|c| c.eq_ignore_ascii_case(col)) {
+                    continue;
+                }
+                let sql = format!("ALTER TABLE \"{}\" ADD COLUMN \"{}\" TEXT", TABLE, col);
+                match self.conn.execute(&sql, []) {
+                    Ok(_) => self.columns.push(col.clone()),
+                    Err(e) => {
+                        // Don't push on failure — anything in self.columns must
+                        // actually exist in the schema, otherwise the next
+                        // prepare_cached() blows up with "no such column".
+                        debug!("ALTER TABLE ADD COLUMN '{}' failed: {}", col, e);
                     }
-                    self.columns.push(col.clone());
                 }
             }
+        }
+
+        // Defensive sync: fetch the live schema from SQLite and rebuild
+        // self.columns from it. This costs one PRAGMA per load_events call but
+        // guarantees that what we list in INSERT actually exists in the table.
+        // Catches any prior drift (case-insensitive duplicates, failed ALTERs
+        // still leaving stale entries in self.columns, etc.) before the
+        // prepare_cached call below would have errored out hard.
+        let actual_columns: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare(&format!("PRAGMA table_info(\"{}\")", TABLE))?;
+            let result: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            result
+        };
+        if !actual_columns.is_empty() {
+            self.columns = actual_columns;
         }
 
         let tx = self.conn.transaction()?;
@@ -237,11 +268,36 @@ impl SearchEngine {
         let mut loaded = 0;
         let empty = String::new();
 
+        // Pre-compute the lowercase-keyed column list so per-event lookups can
+        // fall back case-insensitively. SQLite resolves column names case-
+        // insensitively, but our `Event::fields` HashMap keeps original case;
+        // without this fallback, an event with `fthEnabledProcessStartup`
+        // silently drops its value when self.columns has the column under
+        // `FthEnabledProcessStartup`.
+        let columns_lower: Vec<String> = self.columns.iter().map(|c| c.to_lowercase()).collect();
+
         for ev in events {
+            // Build a lower→value index once per event. Cheap (events have
+            // ~30-100 fields) and unblocks case-mismatched lookups.
+            let lower_index: HashMap<String, &String> = ev
+                .fields
+                .iter()
+                .map(|(k, v)| (k.to_lowercase(), v))
+                .collect();
+
             let params: Vec<&dyn rusqlite::types::ToSql> = self
                 .columns
                 .iter()
-                .map(|col| -> &dyn rusqlite::types::ToSql { ev.fields.get(col).unwrap_or(&empty) })
+                .enumerate()
+                .map(|(i, col)| -> &dyn rusqlite::types::ToSql {
+                    if let Some(v) = ev.fields.get(col) {
+                        v
+                    } else if let Some(v) = lower_index.get(&columns_lower[i]) {
+                        *v
+                    } else {
+                        &empty
+                    }
+                })
                 .collect();
             match stmt.execute(params.as_slice()) {
                 Ok(_) => loaded += 1,
@@ -756,4 +812,81 @@ pub struct EngineStats {
     pub total_events: usize,
     pub total_fields: usize,
     pub populated_fields: HashMap<String, usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Event, SourceFormat};
+
+    fn make_event(fields: &[(&str, &str)]) -> Event {
+        let mut ev = Event::new("test.evtx", SourceFormat::Evtx);
+        for (k, v) in fields {
+            ev.set(*k, *v);
+        }
+        ev
+    }
+
+    /// Regression: a column added in batch 1 under one case spelling must not
+    /// crash the next batch when an event in that batch references the same
+    /// field under a different case spelling. SQLite resolves columns
+    /// case-insensitively; our code must keep self.columns in sync with the
+    /// real schema and tolerate case-mismatched field keys at INSERT time.
+    #[test]
+    fn case_insensitive_column_handling_across_batches() {
+        let mut eng = SearchEngine::new().unwrap();
+
+        // Batch 1: introduces "FthEnabledProcessStartup" (canonical case)
+        let batch1 = vec![make_event(&[
+            ("EventID", "5379"),
+            ("FthEnabledProcessStartup", "True"),
+        ])];
+        eng.load_events(&batch1).unwrap();
+
+        // Batch 2: same field, different case spelling. Used to crash with
+        // "table events has no column named FthEnabledProcessStartup" because
+        // the ALTER TABLE for the new spelling failed (SQLite's case-insensitive
+        // collision) but self.columns still grew, leaving the next INSERT's
+        // column list referencing a non-existent column.
+        let batch2 = vec![make_event(&[
+            ("EventID", "5380"),
+            ("fthEnabledProcessStartup", "False"),
+        ])];
+        eng.load_events(&batch2).unwrap();
+
+        // Both events made it through and the value from batch 2 lands in the
+        // single canonical column (case-insensitive lookup at INSERT time).
+        let r = eng
+            .query_sql(
+                "SELECT \"FthEnabledProcessStartup\" FROM \"events\" ORDER BY \"EventID\"",
+            )
+            .unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(
+            r.rows[0].get("FthEnabledProcessStartup").map(|s| s.as_str()),
+            Some("True")
+        );
+        assert_eq!(
+            r.rows[1].get("FthEnabledProcessStartup").map(|s| s.as_str()),
+            Some("False")
+        );
+    }
+
+    /// Regression: a self.columns list that drifted out of sync with the actual
+    /// SQLite schema (e.g. from a failed ALTER) must self-heal on the next
+    /// load_events call via the PRAGMA table_info sync, not blow up at
+    /// prepare_cached time.
+    #[test]
+    fn pragma_sync_self_heals_drifted_column_list() {
+        let mut eng = SearchEngine::new().unwrap();
+        eng.load_events(&[make_event(&[("EventID", "1")])]).unwrap();
+        // Simulate drift: add a phantom column to self.columns that doesn't
+        // actually exist in the SQLite schema.
+        eng.columns.push("PhantomColumn".to_string());
+        // Next load_events must NOT panic when prepare_cached parses the
+        // INSERT — the PRAGMA sync at the top should drop "PhantomColumn"
+        // before the INSERT statement is built.
+        let result = eng.load_events(&[make_event(&[("EventID", "2")])]);
+        assert!(result.is_ok(), "load_events must self-heal: {:?}", result);
+    }
 }
