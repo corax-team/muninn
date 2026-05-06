@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use psl::Psl;
 use regex::Regex;
 use serde::Serialize;
@@ -41,6 +41,29 @@ impl std::fmt::Display for IocType {
             IocType::TaskName => write!(f, "Task"),
             IocType::PipeName => write!(f, "Pipe"),
         }
+    }
+}
+
+impl IocType {
+    /// Inverse of `Display` — used when reading IOC CSVs back via `parse_iocs_csv`.
+    /// Accepts both the canonical labels and a few common aliases.
+    pub fn from_label(s: &str) -> Option<Self> {
+        Some(match s.trim() {
+            "IPv4" | "ipv4" | "ip" => IocType::Ipv4,
+            "IPv6" | "ipv6" => IocType::Ipv6,
+            "Domain" | "domain" => IocType::Domain,
+            "URL" | "url" => IocType::Url,
+            "MD5" | "md5" => IocType::Md5,
+            "SHA1" | "sha1" => IocType::Sha1,
+            "SHA256" | "sha256" => IocType::Sha256,
+            "Email" | "email" => IocType::Email,
+            "FilePath" | "filepath" | "Path" | "path" => IocType::FilePath,
+            "Registry" | "registry" | "RegistryKey" => IocType::RegistryKey,
+            "Service" | "service" | "ServiceName" => IocType::ServiceName,
+            "Task" | "task" | "TaskName" => IocType::TaskName,
+            "Pipe" | "pipe" | "PipeName" => IocType::PipeName,
+            _ => return None,
+        })
     }
 }
 
@@ -1159,6 +1182,75 @@ pub fn render_iocs_full(iocs: &[Ioc]) -> String {
     render_iocs_inner(iocs, usize::MAX, usize::MAX, false)
 }
 
+/// Parse a SIGMA-curator IOC CSV (the same shape `render_iocs_csv` produces) back
+/// into a `Vec<Ioc>` so callers can re-run enrichment on a previously-extracted
+/// snapshot without re-parsing the original EVTX/JSON evidence.
+///
+/// The CSV header must match: `Type,Value,Count,First Seen,Last Seen,Source Fields,Source Files`.
+/// Source-fields and source-files columns use `; ` as the inner delimiter
+/// (a quirk of `render_iocs_csv` — preserving roundtrip equality).
+pub fn parse_iocs_csv(path: &std::path::Path) -> Result<Vec<Ioc>> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(path)
+        .with_context(|| format!("failed to open IOC CSV at {:?}", path))?;
+    let expected = [
+        "Type",
+        "Value",
+        "Count",
+        "First Seen",
+        "Last Seen",
+        "Source Fields",
+        "Source Files",
+    ];
+    let headers = rdr.headers()?.clone();
+    if headers.iter().take(expected.len()).collect::<Vec<_>>() != expected {
+        bail!(
+            "IOC CSV header mismatch — expected {:?}, got {:?}",
+            expected,
+            headers.iter().collect::<Vec<_>>()
+        );
+    }
+
+    let mut iocs = Vec::new();
+    for (idx, row) in rdr.records().enumerate() {
+        let row = row.with_context(|| format!("malformed CSV row at line {}", idx + 2))?;
+        let type_str = row.get(0).unwrap_or("").trim();
+        let ioc_type = IocType::from_label(type_str)
+            .with_context(|| format!("unknown IOC type {:?} on line {}", type_str, idx + 2))?;
+        let value = row.get(1).unwrap_or("").to_string();
+        let count: usize = row.get(2).unwrap_or("0").trim().parse().unwrap_or(0);
+        let first_seen = non_empty(row.get(3));
+        let last_seen = non_empty(row.get(4));
+        let source_fields = split_semis(row.get(5).unwrap_or(""));
+        let source_files = split_semis(row.get(6).unwrap_or(""));
+        iocs.push(Ioc {
+            ioc_type,
+            value,
+            count,
+            source_fields,
+            first_seen,
+            last_seen,
+            source_files,
+        });
+    }
+    Ok(iocs)
+}
+
+fn non_empty(s: Option<&str>) -> Option<String> {
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn split_semis(s: &str) -> Vec<String> {
+    s.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Render IOCs as CSV.
 pub fn render_iocs_csv(iocs: &[Ioc]) -> String {
     let mut output =
@@ -1539,45 +1631,93 @@ pub fn enrich_abuseipdb(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>>
 
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_opentip(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
+    enrich_opentip_with_cap(iocs, api_key, 200)
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_opentip_with_cap(
+    iocs: &[Ioc],
+    api_key: &str,
+    max_queries: usize,
+) -> Result<Vec<EnrichedIoc>> {
+    // OpenTIP API moved to GET-based queries (POST returns 405 since 2024). Build
+    // the URL as `<base>/<type>?request=<value>`, expect the response with a
+    // top-level `Zone` field. The old POST shape (`response[0].zone`) is gone.
+    //
+    // The cap matters: free-tier OpenTIP allows ~200 queries/day; the input
+    // list has been pre-sorted by `finalize()` as count-DESC for human review,
+    // which is exactly the wrong order for threat hunting (top-N = legitimate
+    // Microsoft system files most-seen, malware = rare = bottom). Re-sort here
+    // for enrichment: hash types first (most actionable), within hashes use
+    // count ASC (rare first — that's where unknowns live), then everything
+    // else. The original Vec order is unchanged for the caller.
+    const BASE: &str = "https://opentip.kaspersky.com/api/v1/search";
     let mut enriched = Vec::new();
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
         .build();
 
-    for ioc in iocs.iter().take(25) {
-        let (endpoint, request_body) = match ioc.ioc_type {
-            IocType::Md5 | IocType::Sha1 | IocType::Sha256 => (
-                "https://opentip.kaspersky.com/api/v1/search/hash",
-                serde_json::json!({"request": [{"hash": &ioc.value}]}),
-            ),
-            IocType::Ipv4 => (
-                "https://opentip.kaspersky.com/api/v1/search/ip",
-                serde_json::json!({"request": [{"ip": &ioc.value}]}),
-            ),
-            IocType::Domain => (
-                "https://opentip.kaspersky.com/api/v1/search/domain",
-                serde_json::json!({"request": [{"domain": &ioc.value}]}),
-            ),
-            IocType::Url => (
-                "https://opentip.kaspersky.com/api/v1/search/url",
-                serde_json::json!({"request": [{"url": &ioc.value}]}),
-            ),
+    // Build a re-prioritized index list. Hash types ASC by count, then IPs/domain/URL.
+    let mut order: Vec<usize> = (0..iocs.len())
+        .filter(|&i| {
+            matches!(
+                iocs[i].ioc_type,
+                IocType::Md5
+                    | IocType::Sha1
+                    | IocType::Sha256
+                    | IocType::Ipv4
+                    | IocType::Ipv6
+                    | IocType::Domain
+                    | IocType::Url
+            )
+        })
+        .collect();
+    order.sort_by_key(|&i| match iocs[i].ioc_type {
+        // Hashes get priority: rarest first within each hash subtype
+        IocType::Sha256 => (0, iocs[i].count),
+        IocType::Sha1 => (1, iocs[i].count),
+        IocType::Md5 => (2, iocs[i].count),
+        IocType::Ipv4 => (3, iocs[i].count),
+        IocType::Ipv6 => (3, iocs[i].count),
+        IocType::Domain => (4, iocs[i].count),
+        IocType::Url => (5, iocs[i].count),
+        _ => (99, 0),
+    });
+    let total_eligible = order.len();
+    let to_query = order.len().min(max_queries);
+
+    log::info!(
+        "OpenTIP: querying {} of {} eligible IOCs (cap={}, rest skipped)",
+        to_query,
+        total_eligible,
+        max_queries
+    );
+
+    let mut quota_hit = false;
+    for &idx in order.iter().take(to_query) {
+        let ioc = &iocs[idx];
+        let type_label = match ioc.ioc_type {
+            IocType::Md5 | IocType::Sha1 | IocType::Sha256 => "hash",
+            // OpenTIP's `/search/ip` accepts both IPv4 and IPv6 — the v4-only
+            // restriction we used to have was a code-side oversight.
+            IocType::Ipv4 | IocType::Ipv6 => "ip",
+            IocType::Domain => "domain",
+            IocType::Url => "url",
             _ => continue,
         };
+        // url-encode the IOC value so colons/slashes/etc. don't break the query.
+        let encoded = url_encode(&ioc.value);
+        let endpoint = format!("{}/{}?request={}", BASE, type_label, encoded);
 
-        match agent
-            .post(endpoint)
-            .set("x-api-key", api_key)
-            .set("Content-Type", "application/json")
-            .send_string(&request_body.to_string())
-        {
+        match agent.get(&endpoint).set("x-api-key", api_key).call() {
             Ok(resp) => {
                 let body = resp.into_string().unwrap_or_default();
                 let json: serde_json::Value =
                     serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-
-                let zone = json["response"][0]["zone"].as_str().unwrap_or("Grey");
-
+                // Modern endpoint returns `Zone` at the top level. Default Grey
+                // when the field is missing — matches portal UI behavior for
+                // unknown / not-yet-classified items.
+                let zone = json["Zone"].as_str().unwrap_or("Grey");
                 let (verdict, score) = match zone {
                     "Red" => ("malicious", 90.0),
                     "Orange" => ("suspicious", 60.0),
@@ -1585,22 +1725,24 @@ pub fn enrich_opentip(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
                     "Green" => ("clean", 5.0),
                     _ => ("unknown", 0.0),
                 };
-
-                let categories: Vec<String> = json["response"][0]["categories"]
+                let categories: Vec<String> = json["Categories"]
                     .as_array()
+                    .or_else(|| json["DetectionsInfo"].as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .filter_map(|v| {
+                                v.as_str()
+                                    .map(str::to_string)
+                                    .or_else(|| v["DetectionName"].as_str().map(str::to_string))
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
-
                 let details = if categories.is_empty() {
                     format!("zone: {}", zone)
                 } else {
                     format!("zone: {}, categories: {}", zone, categories.join(", "))
                 };
-
                 enriched.push(EnrichedIoc {
                     ioc: ioc.clone(),
                     verdict: verdict.into(),
@@ -1610,15 +1752,35 @@ pub fn enrich_opentip(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
                     raw_response: Some(body),
                 });
             }
-            Err(ureq::Error::Status(429, _)) => {
+            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                // Auth failure — the user almost certainly wants to see this loud,
+                // not buried in debug logs. Surface as a single visible error
+                // record and stop further requests (they'll all fail the same way).
+                log::warn!("OpenTIP authentication failed (401/403) — check --opentip-key");
                 enriched.push(EnrichedIoc {
                     ioc: ioc.clone(),
-                    verdict: "unknown".into(),
+                    verdict: "error".into(),
+                    source: "OpenTIP".into(),
+                    details: "Authentication failed (401/403). Check --opentip-key.".into(),
+                    score: None,
+                    raw_response: None,
+                });
+                break;
+            }
+            Err(ureq::Error::Status(429, _)) => {
+                log::warn!(
+                    "OpenTIP rate limit reached after {} queries",
+                    enriched.len()
+                );
+                enriched.push(EnrichedIoc {
+                    ioc: ioc.clone(),
+                    verdict: "error".into(),
                     source: "OpenTIP".into(),
                     details: "Rate limit exceeded".into(),
                     score: None,
                     raw_response: None,
                 });
+                quota_hit = true;
                 break;
             }
             Err(ureq::Error::Status(404, _)) => {
@@ -1631,15 +1793,42 @@ pub fn enrich_opentip(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
                     raw_response: None,
                 });
             }
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                log::warn!(
+                    "OpenTIP HTTP {} for {}: {}",
+                    code,
+                    ioc.value,
+                    body.chars().take(120).collect::<String>()
+                );
+            }
             Err(e) => {
-                log::debug!("OpenTIP request failed for {}: {}", ioc.value, e);
+                log::warn!("OpenTIP request failed for {}: {}", ioc.value, e);
             }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
+    let _ = quota_hit; // currently informational only; kept for future use
     Ok(enriched)
+}
+
+fn url_encode(s: &str) -> String {
+    // Hand-rolled minimal percent-encoding. Pulling in `urlencoding` for one
+    // function is overkill; SIGMA-curator IOC values stay within a tame ASCII
+    // subset (hashes, IPs, URLs already URL-shaped, domain names). Bytes that
+    // are reserved per RFC 3986 unreserved/sub-delims-safe stay raw.
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2159,6 +2348,193 @@ pub fn render_enriched(enriched: &[EnrichedIoc]) -> String {
 
     output.push_str(&format!("  {}\n", "═".repeat(80)));
     output
+}
+
+/// HTML report for enriched IOCs — sortable table, verdict-coloured rows,
+/// clickable links to OpenTIP, VirusTotal, and AbuseIPDB depending on the
+/// IOC type. Designed to live alongside `*.enriched.txt` / `.enriched.json`.
+pub fn render_enriched_html(enriched: &[EnrichedIoc]) -> String {
+    let total = enriched.len();
+    let n_mal = enriched.iter().filter(|e| e.verdict == "malicious").count();
+    let n_susp = enriched
+        .iter()
+        .filter(|e| e.verdict == "suspicious")
+        .count();
+    let n_clean = enriched.iter().filter(|e| e.verdict == "clean").count();
+    let n_unk = enriched.iter().filter(|e| e.verdict == "unknown").count();
+    let n_err = enriched.iter().filter(|e| e.verdict == "error").count();
+
+    let mut rows = String::new();
+    for e in enriched {
+        let value_html = html_escape(&e.ioc.value);
+        let details_html = html_escape(&e.details);
+        let source_html = html_escape(&e.source);
+        let type_html = html_escape(&e.ioc.ioc_type.to_string());
+        let verdict_class = match e.verdict.as_str() {
+            "malicious" => "malicious",
+            "suspicious" => "suspicious",
+            "clean" => "clean",
+            "error" => "error",
+            _ => "unknown",
+        };
+        // Clickable links to known portals — IOC-type-aware. Multiple links per
+        // row when the IOC type maps to several useful pivot points (hashes
+        // pivot to OpenTIP + VirusTotal, IPs to OpenTIP + AbuseIPDB, etc.).
+        let links = enrichment_links(&e.ioc);
+        rows.push_str(&format!(
+            "<tr class=\"{cls}\">\
+             <td><span class=\"verdict {cls}\">{verdict}</span></td>\
+             <td>{ioc_type}</td>\
+             <td class=\"value\">{value} {links}</td>\
+             <td>{source}</td>\
+             <td>{details}</td>\
+             <td class=\"score\">{score}</td>\
+             </tr>\n",
+            cls = verdict_class,
+            verdict = e.verdict.to_uppercase(),
+            ioc_type = type_html,
+            value = value_html,
+            source = source_html,
+            details = details_html,
+            score = e.score.map(|s| format!("{:.0}", s)).unwrap_or_default(),
+            links = links,
+        ));
+    }
+
+    format!(
+        r##"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Muninn — IOC Enrichment</title>
+<style>
+body {{ font-family: -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; background: #0d1117; color: #c9d1d9; }}
+header {{ padding: 18px 24px; background: #161b22; border-bottom: 1px solid #30363d; }}
+h1 {{ margin: 0; font-size: 20px; }}
+.summary {{ margin-top: 6px; font-size: 13px; color: #8b949e; }}
+.summary span {{ display: inline-block; margin-right: 12px; padding: 2px 8px; border-radius: 4px; }}
+.summary .total {{ background: #21262d; color: #c9d1d9; }}
+.summary .malicious {{ background: #5a1414; color: #ff7b72; }}
+.summary .suspicious {{ background: #5d3f0d; color: #f1c40f; }}
+.summary .clean {{ background: #0e3a26; color: #56d364; }}
+.summary .unknown {{ background: #21262d; color: #8b949e; }}
+.summary .error {{ background: #3f0f0f; color: #ffa198; }}
+table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+thead {{ position: sticky; top: 0; background: #161b22; }}
+th {{ text-align: left; padding: 10px 12px; border-bottom: 1px solid #30363d; cursor: pointer; user-select: none; }}
+th:hover {{ background: #21262d; }}
+td {{ padding: 8px 12px; border-bottom: 1px solid #21262d; vertical-align: top; }}
+tr.malicious td:first-child {{ border-left: 3px solid #ff7b72; }}
+tr.suspicious td:first-child {{ border-left: 3px solid #f1c40f; }}
+tr.clean td:first-child {{ border-left: 3px solid #56d364; }}
+tr.unknown td:first-child {{ border-left: 3px solid #6e7681; }}
+tr.error td:first-child {{ border-left: 3px solid #ffa198; }}
+.verdict {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }}
+.verdict.malicious {{ background: #5a1414; color: #ff7b72; }}
+.verdict.suspicious {{ background: #5d3f0d; color: #f1c40f; }}
+.verdict.clean {{ background: #0e3a26; color: #56d364; }}
+.verdict.unknown {{ background: #21262d; color: #8b949e; }}
+.verdict.error {{ background: #3f0f0f; color: #ffa198; }}
+.value {{ font-family: SFMono-Regular, Consolas, monospace; word-break: break-all; }}
+.value a {{ display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; background: #21262d; color: #58a6ff; text-decoration: none; font-size: 11px; }}
+.value a:hover {{ background: #30363d; }}
+.score {{ font-family: SFMono-Regular, Consolas, monospace; text-align: right; color: #8b949e; }}
+</style></head><body>
+<header>
+<h1>Muninn — IOC Enrichment</h1>
+<div class="summary">
+<span class="total">{total} total</span>
+<span class="malicious">{n_mal} malicious</span>
+<span class="suspicious">{n_susp} suspicious</span>
+<span class="clean">{n_clean} clean</span>
+<span class="unknown">{n_unk} unknown</span>
+<span class="error">{n_err} errors</span>
+</div>
+</header>
+<table id="t">
+<thead><tr>
+<th onclick="sortBy(0)">Verdict</th>
+<th onclick="sortBy(1)">Type</th>
+<th onclick="sortBy(2)">Value</th>
+<th onclick="sortBy(3)">Source</th>
+<th onclick="sortBy(4)">Details</th>
+<th onclick="sortBy(5)">Score</th>
+</tr></thead>
+<tbody>
+{rows}
+</tbody></table>
+<script>
+const verdictRank = {{ malicious: 0, suspicious: 1, error: 2, clean: 3, unknown: 4 }};
+function sortBy(col) {{
+  const tb = document.querySelector('#t tbody');
+  const rows = Array.from(tb.querySelectorAll('tr'));
+  rows.sort((a, b) => {{
+    const at = a.cells[col].innerText.trim();
+    const bt = b.cells[col].innerText.trim();
+    if (col === 0) return (verdictRank[at.toLowerCase()] ?? 99) - (verdictRank[bt.toLowerCase()] ?? 99);
+    if (col === 5) {{ const an = parseFloat(at) || 0; const bn = parseFloat(bt) || 0; return bn - an; }}
+    return at.localeCompare(bt);
+  }});
+  rows.forEach(r => tb.appendChild(r));
+}}
+sortBy(0);
+</script>
+</body></html>
+"##,
+        total = total,
+        n_mal = n_mal,
+        n_susp = n_susp,
+        n_clean = n_clean,
+        n_unk = n_unk,
+        n_err = n_err,
+        rows = rows,
+    )
+}
+
+/// Build clickable anchor tags pointing to per-IOC-type pivot portals.
+/// Output is HTML-safe (values are URL-encoded; rest is hardcoded).
+fn enrichment_links(ioc: &Ioc) -> String {
+    let v = &ioc.value;
+    let enc = url_encode_for_link(v);
+    match ioc.ioc_type {
+        IocType::Md5 | IocType::Sha1 | IocType::Sha256 => format!(
+            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
+             <a href=\"https://www.virustotal.com/gui/file/{enc}\" target=\"_blank\">vt</a>\
+             <a href=\"https://bazaar.abuse.ch/sample/{enc}/\" target=\"_blank\">bazaar</a>"
+        ),
+        IocType::Ipv4 | IocType::Ipv6 => format!(
+            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
+             <a href=\"https://www.abuseipdb.com/check/{enc}\" target=\"_blank\">abuseipdb</a>\
+             <a href=\"https://www.virustotal.com/gui/ip-address/{enc}\" target=\"_blank\">vt</a>"
+        ),
+        IocType::Domain => format!(
+            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
+             <a href=\"https://www.virustotal.com/gui/domain/{enc}\" target=\"_blank\">vt</a>\
+             <a href=\"https://urlhaus.abuse.ch/browse.php?search={enc}\" target=\"_blank\">urlhaus</a>"
+        ),
+        IocType::Url => format!(
+            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
+             <a href=\"https://urlhaus.abuse.ch/browse.php?search={enc}\" target=\"_blank\">urlhaus</a>"
+        ),
+        _ => String::new(),
+    }
+}
+
+fn url_encode_for_link(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

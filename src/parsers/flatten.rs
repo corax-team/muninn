@@ -267,21 +267,92 @@ fn flatten_event_data(ed: &Value, out: &mut HashMap<String, String>) {
         if let Some(data) = map.get("Data") {
             match data {
                 Value::Array(arr) => {
+                    // Mixed array: each element might be a named param (Sysmon-style)
+                    // OR a bare string (Kaspersky/Application/older event styles).
+                    // Named params populate their own field; bare strings + nameless
+                    // objects are joined into EventData_Text so the message body
+                    // is searchable / IOC-extractable. Without this, Kaspersky
+                    // events come through with only system metadata and the actual
+                    // message vanishes — the bug that hid threat hashes.
+                    let mut bare_strings: Vec<String> = Vec::new();
+                    let mut indexed_idx = 0usize;
                     for item in arr {
-                        if let Value::Object(dm) = item {
-                            let name = dm.get("@Name").or(dm.get("Name")).and_then(|v| v.as_str());
-                            let text = dm.get("#text").or(dm.get("text")).or(dm.get("$"));
-                            if let (Some(n), Some(t)) = (name, text) {
-                                out.insert(n.to_string(), val_to_string(t));
+                        match item {
+                            Value::Object(dm) => {
+                                let name =
+                                    dm.get("@Name").or(dm.get("Name")).and_then(|v| v.as_str());
+                                let text = dm.get("#text").or(dm.get("text")).or(dm.get("$"));
+                                match (name, text) {
+                                    (Some(n), Some(t)) => {
+                                        out.insert(n.to_string(), val_to_string(t));
+                                    }
+                                    (None, Some(t)) => {
+                                        // Nameless: collect by position so the
+                                        // analyst still has Data_0, Data_1, etc.
+                                        out.insert(
+                                            format!("Data_{}", indexed_idx),
+                                            val_to_string(t),
+                                        );
+                                        indexed_idx += 1;
+                                        bare_strings.push(val_to_string(t));
+                                    }
+                                    _ => {
+                                        // {@Name: x, no text} — keep at least the name
+                                        if let Some(n) = name {
+                                            out.insert(n.to_string(), String::new());
+                                        }
+                                    }
+                                }
+                            }
+                            // Bare strings inside Data array — common in Application
+                            // and many provider-specific channels (Kaspersky, McAfee,
+                            // various security vendors).
+                            Value::String(s) => {
+                                out.insert(format!("Data_{}", indexed_idx), s.clone());
+                                indexed_idx += 1;
+                                bare_strings.push(s.clone());
+                            }
+                            other => {
+                                let s = val_to_string(other);
+                                if !s.is_empty() {
+                                    out.insert(format!("Data_{}", indexed_idx), s.clone());
+                                    indexed_idx += 1;
+                                    bare_strings.push(s);
+                                }
                             }
                         }
                     }
+                    if !bare_strings.is_empty() {
+                        out.insert("EventData_Text".into(), bare_strings.join("\n"));
+                    }
                 }
+                // Single Data object — could be a named param (Sysmon)
+                // OR a Kaspersky-style `Data: {"#text": [...]}` payload.
                 Value::Object(dm) => {
                     let name = dm.get("@Name").or(dm.get("Name")).and_then(|v| v.as_str());
                     let text = dm.get("#text").or(dm.get("text"));
-                    if let (Some(n), Some(t)) = (name, text) {
-                        out.insert(n.to_string(), val_to_string(t));
+                    match (name, text) {
+                        (Some(n), Some(t)) => {
+                            out.insert(n.to_string(), val_to_string(t));
+                        }
+                        (None, Some(t)) => {
+                            // Kaspersky pattern: { "#text": ["msg1", "msg2", ...] }
+                            // Surface the joined text as EventData_Text so the
+                            // message body becomes searchable.
+                            let joined = match t {
+                                Value::Array(arr) => arr
+                                    .iter()
+                                    .map(val_to_string)
+                                    .filter(|s| !s.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                                _ => val_to_string(t),
+                            };
+                            if !joined.is_empty() {
+                                out.insert("EventData_Text".into(), joined);
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {
@@ -328,5 +399,56 @@ mod tests {
         let ev = flatten_json(&input, "test.evtx", SourceFormat::Evtx);
         assert_eq!(ev.get("CommandLine"), Some("cmd.exe /c whoami"));
         assert_eq!(ev.get("Image"), Some("C:\\Windows\\System32\\cmd.exe"));
+    }
+
+    #[test]
+    fn kaspersky_data_text_array_surfaces_as_eventdata_text() {
+        // Regression test: Kaspersky / Application-style events use a single
+        // unnamed `Data` object with `#text` carrying an array of message
+        // strings. The flattener must surface the joined text so the message
+        // body reaches SIGMA + IOC pipelines. Before the fix, this content
+        // was silently dropped because the gate required an @Name field.
+        let input = serde_json::json!({
+            "Event": {
+                "System": { "EventID": 2078, "Channel": "Kaspersky Endpoint Security" },
+                "EventData": {
+                    "Data": {
+                        "#text": [
+                            "Положение о KSN было обновлено.",
+                            "Хеш заражённого файла: ac298dcf92ac4de9a4521e0596a9cef5"
+                        ]
+                    }
+                }
+            }
+        });
+        let ev = flatten_json(&input, "test.evtx", SourceFormat::Evtx);
+        let text = ev
+            .get("EventData_Text")
+            .expect("EventData_Text must be set");
+        assert!(text.contains("KSN"), "joined message should be present");
+        assert!(
+            text.contains("ac298dcf92ac4de9a4521e0596a9cef5"),
+            "hash inside the message must be discoverable for IOC extraction"
+        );
+    }
+
+    #[test]
+    fn nameless_data_array_items_get_indexed_keys() {
+        // Bare strings inside a Data array (some Application providers do this)
+        // should land as Data_0, Data_1, ... AND be joined into EventData_Text.
+        let input = serde_json::json!({
+            "Event": {
+                "System": { "EventID": 1000, "Channel": "Application" },
+                "EventData": {
+                    "Data": ["param-a", "param-b", "param-c"]
+                }
+            }
+        });
+        let ev = flatten_json(&input, "test.evtx", SourceFormat::Evtx);
+        assert_eq!(ev.get("Data_0"), Some("param-a"));
+        assert_eq!(ev.get("Data_2"), Some("param-c"));
+        let joined = ev.get("EventData_Text").expect("joined text must be set");
+        assert!(joined.contains("param-a"));
+        assert!(joined.contains("param-c"));
     }
 }

@@ -71,7 +71,7 @@ struct Config {
     about = "Muninn — memory of Corax. Universal log parser, SIGMA detection engine, and search tool. 15+ formats, one binary, zero dependencies."
 )]
 struct Cli {
-    #[arg(short = 'e', long = "events", required_unless_present_any = ["load_db", "download_rules"])]
+    #[arg(short = 'e', long = "events", required_unless_present_any = ["load_db", "download_rules", "enrich_from"])]
     events: Option<PathBuf>,
 
     #[arg(short = 'r', long = "rules")]
@@ -205,6 +205,15 @@ struct Cli {
 
     #[arg(long = "ioc-extract", help = "Extract IOCs from events and save to file", default_missing_value = "auto", num_args = 0..=1)]
     ioc_extract: Option<PathBuf>,
+
+    #[arg(
+        long = "enrich-from",
+        help = "Skip evidence parsing and re-run enrichment on a previously-saved IOC CSV \
+                (one of muninn_iocs_*.csv). Use to iterate on enrichment providers/keys \
+                without paying the EVTX-parse cost twice. Combine with --enrich-free, \
+                --opentip-key, --abuse-ch-key, etc."
+    )]
+    enrich_from: Option<PathBuf>,
 
     #[arg(
         long = "ioc-max",
@@ -426,6 +435,136 @@ fn available_memory_bytes() -> Option<u64> {
     None
 }
 
+/// `--enrich-from <csv>` short-circuit: re-run enrichment providers on a
+/// previously-saved IOC CSV without re-parsing evidence. Same provider matrix
+/// as the full pipeline (VT, AbuseIPDB, OpenTIP, abuse.ch, CIRCL, Cymru),
+/// gated by the same CLI keys / flags.
+#[cfg(feature = "ioc-enrich")]
+fn enrich_from_csv_main(
+    cli: &Cli,
+    csv_path: &std::path::Path,
+    run_timestamp: chrono::DateTime<Local>,
+) -> Result<()> {
+    let iocs = muninn::ioc::parse_iocs_csv(csv_path)
+        .with_context(|| format!("failed to parse IOC CSV {:?}", csv_path))?;
+    if !cli.quiet {
+        println!(
+            "  {} Loaded {} IOCs from {:?}",
+            "▶".cyan(),
+            iocs.len(),
+            csv_path
+        );
+    }
+
+    let try_provider = |name: &str,
+                        run: &dyn Fn() -> Result<Vec<muninn::ioc::EnrichedIoc>>|
+     -> Vec<muninn::ioc::EnrichedIoc> {
+        if !cli.quiet {
+            println!("  {} {}...", "▶".cyan(), name);
+        }
+        match run() {
+            Ok(v) => v,
+            Err(e) => {
+                if !cli.quiet {
+                    eprintln!("  {} {} failed: {}", "✗".red(), name, e);
+                }
+                Vec::new()
+            }
+        }
+    };
+
+    let mut all_enriched: Vec<muninn::ioc::EnrichedIoc> = Vec::new();
+
+    if let Some(vt) = cli.vt_key.as_deref() {
+        all_enriched.extend(try_provider("VirusTotal", &|| {
+            muninn::ioc::enrich_virustotal(&iocs, vt)
+        }));
+    }
+    if let Some(ab) = cli.abuseipdb_key.as_deref() {
+        all_enriched.extend(try_provider("AbuseIPDB", &|| {
+            muninn::ioc::enrich_abuseipdb(&iocs, ab)
+        }));
+    }
+    if let Some(op) = cli.opentip_key.as_deref() {
+        let cap = cli.opentip_max.max(1);
+        all_enriched.extend(try_provider("Kaspersky OpenTIP", &|| {
+            muninn::ioc::enrich_opentip_with_cap(&iocs, op, cap)
+        }));
+    }
+    if let Some(ach) = cli.abuse_ch_key.as_deref() {
+        all_enriched.extend(try_provider("abuse.ch URLhaus", &|| {
+            muninn::ioc::enrich_urlhaus(&iocs, ach)
+        }));
+        all_enriched.extend(try_provider("abuse.ch ThreatFox", &|| {
+            muninn::ioc::enrich_threatfox(&iocs, ach)
+        }));
+        all_enriched.extend(try_provider("abuse.ch MalwareBazaar", &|| {
+            muninn::ioc::enrich_malwarebazaar(&iocs, ach)
+        }));
+    }
+    if cli.enrich_free {
+        all_enriched.extend(try_provider("CIRCL Hashlookup", &|| {
+            muninn::ioc::enrich_circl_hashlookup(&iocs)
+        }));
+        all_enriched.extend(try_provider("Team Cymru MHR", &|| {
+            muninn::ioc::enrich_cymru_mhr(&iocs)
+        }));
+    }
+
+    if all_enriched.is_empty() {
+        if !cli.quiet {
+            eprintln!(
+                "  {} No enrichment providers configured. Pass at least one of \
+                 --enrich-free, --opentip-key, --vt-key, --abuseipdb-key, --abuse-ch-key.",
+                "[!]".yellow()
+            );
+        }
+        return Ok(());
+    }
+    let enriched_total = all_enriched.len();
+
+    // Persist results next to the input CSV so the user finds them easily.
+    let stem = csv_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("enrich_{}", run_timestamp.format("%Y-%m-%d_%H-%M-%S")));
+    let parent = csv_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let txt_out = parent.join(format!("{}.enriched.txt", stem));
+    let json_out = parent.join(format!("{}.enriched.json", stem));
+    let html_out = parent.join(format!("{}.enriched.html", stem));
+
+    std::fs::write(&txt_out, muninn::ioc::render_enriched(&all_enriched))?;
+    std::fs::write(&json_out, serde_json::to_string_pretty(&all_enriched)?)?;
+    std::fs::write(&html_out, muninn::ioc::render_enriched_html(&all_enriched))?;
+    if !cli.quiet {
+        println!(
+            "  {} {} enrichment results → {:?}, {:?}, {:?}",
+            "✓".green(),
+            enriched_total,
+            txt_out,
+            json_out,
+            html_out
+        );
+    }
+    Ok(())
+}
+
+/// Stub when the `ioc-enrich` feature is disabled — fail loudly so users see
+/// what feature flag they need rather than silently doing nothing.
+#[cfg(not(feature = "ioc-enrich"))]
+fn enrich_from_csv_main(
+    _cli: &Cli,
+    _csv_path: &std::path::Path,
+    _run_timestamp: chrono::DateTime<Local>,
+) -> Result<()> {
+    anyhow::bail!(
+        "--enrich-from requires the `ioc-enrich` feature. Rebuild with: \
+         cargo build --release --features ioc-enrich"
+    );
+}
+
 fn main() -> Result<()> {
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Error)
@@ -491,6 +630,14 @@ fn main() -> Result<()> {
 
     let start = Instant::now();
     let run_timestamp = Local::now();
+
+    // --enrich-from <csv>: short-circuit. Skip evidence/SIGMA entirely; just load
+    // a previously-saved IOC CSV and run whichever enrichment providers the user
+    // configured (--enrich-free, --opentip-key, --vt-key, --abuse-ch-key, etc).
+    // Useful for iterating on enrichment without paying the EVTX-parse cost twice.
+    if let Some(ref csv_path) = cli.enrich_from.clone() {
+        return enrich_from_csv_main(&cli, csv_path, run_timestamp);
+    }
 
     // Merge YAML config if provided
     if let Some(ref config_path) = cli.config {
@@ -2676,6 +2823,13 @@ fn main() -> Result<()> {
         #[cfg(feature = "ioc-enrich")]
         {
             let mut all_enriched = Vec::new();
+            // Track whether ANY provider was called so we can print a summary
+            // even when zero results came back (silent-on-empty was a footgun).
+            let any_enrich_provider_ran = cli.vt_key.is_some()
+                || cli.abuseipdb_key.is_some()
+                || cli.opentip_key.is_some()
+                || cli.abuse_ch_key.is_some()
+                || cli.enrich_free;
 
             if let Some(ref vt_key) = cli.vt_key {
                 if !cli.quiet {
@@ -2707,9 +2861,17 @@ fn main() -> Result<()> {
 
             if let Some(ref opentip_key) = cli.opentip_key {
                 if !cli.quiet {
-                    println!("  {} Enriching IOCs via Kaspersky OpenTIP...", "▶".cyan());
+                    println!(
+                        "  {} Enriching IOCs via Kaspersky OpenTIP (cap: {} queries)...",
+                        "▶".cyan(),
+                        cli.opentip_max
+                    );
                 }
-                match muninn::ioc::enrich_opentip(&iocs, opentip_key) {
+                match muninn::ioc::enrich_opentip_with_cap(
+                    &iocs,
+                    opentip_key,
+                    cli.opentip_max.max(1),
+                ) {
                     Ok(enriched) => all_enriched.extend(enriched),
                     Err(e) => {
                         if !cli.quiet {
@@ -2769,23 +2931,62 @@ fn main() -> Result<()> {
                 }
             }
 
-            if !all_enriched.is_empty() {
+            // Always emit a summary even when there are zero results — the user
+            // needs to know the providers ran (or didn't) and see error counts.
+            // Silent-on-empty was a real footgun: someone passed --opentip-key
+            // with an expired key, saw "Enriching IOCs via Kaspersky OpenTIP..."
+            // and then nothing, and assumed the feature was broken.
+            if any_enrich_provider_ran {
                 if !cli.quiet {
-                    let output = muninn::ioc::render_enriched(&all_enriched);
-                    print!("{}", output);
+                    let n_total = all_enriched.len();
+                    let n_err = all_enriched.iter().filter(|e| e.verdict == "error").count();
+                    let n_clean = all_enriched.iter().filter(|e| e.verdict == "clean").count();
+                    let n_susp = all_enriched
+                        .iter()
+                        .filter(|e| e.verdict == "suspicious")
+                        .count();
+                    let n_mal = all_enriched
+                        .iter()
+                        .filter(|e| e.verdict == "malicious")
+                        .count();
+                    let n_unk = all_enriched
+                        .iter()
+                        .filter(|e| e.verdict == "unknown")
+                        .count();
+                    println!(
+                        "  {} Enrichment summary: {} total ({} malicious, {} suspicious, {} clean, {} unknown, {} errors)",
+                        if n_err == n_total && n_total > 0 { "✗".red() } else { "✓".green() },
+                        n_total, n_mal, n_susp, n_clean, n_unk, n_err
+                    );
                 }
-                // Persist enriched verdicts next to iocs.txt/.csv. The HTML
-                // report picks them up via the gui_opentip_results channel
-                // for now, but the standalone JSON helps grepping/jq use.
-                let enriched_json = ioc_path.with_extension("enriched.json");
-                if let Ok(json) = serde_json::to_string_pretty(&all_enriched) {
-                    let _ = std::fs::write(&enriched_json, json);
+                if !all_enriched.is_empty() {
                     if !cli.quiet {
-                        println!("  {} Enrichment results → {:?}", "✓".green(), enriched_json);
+                        let output = muninn::ioc::render_enriched(&all_enriched);
+                        print!("{}", output);
                     }
-                }
-                if is_gui {
-                    gui_enriched_iocs = all_enriched;
+                    // Persist enriched verdicts next to iocs.txt/.csv. JSON for
+                    // grep/jq, HTML for human review with clickable pivots
+                    // (OpenTIP, VirusTotal, AbuseIPDB, abuse.ch links).
+                    let enriched_json = ioc_path.with_extension("enriched.json");
+                    if let Ok(json) = serde_json::to_string_pretty(&all_enriched) {
+                        let _ = std::fs::write(&enriched_json, json);
+                    }
+                    let enriched_html = ioc_path.with_extension("enriched.html");
+                    let _ = std::fs::write(
+                        &enriched_html,
+                        muninn::ioc::render_enriched_html(&all_enriched),
+                    );
+                    if !cli.quiet {
+                        println!(
+                            "  {} Enrichment results → {:?}, {:?}",
+                            "✓".green(),
+                            enriched_json,
+                            enriched_html
+                        );
+                    }
+                    if is_gui {
+                        gui_enriched_iocs = all_enriched.clone();
+                    }
                 }
             }
         }
