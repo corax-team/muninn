@@ -258,10 +258,23 @@ struct Cli {
     #[cfg(feature = "ioc-enrich")]
     #[arg(
         long = "opentip-max",
-        help = "Max IOCs to check via OpenTIP (default: all, daily quota: 2000)",
-        default_value = "2000"
+        help = "Max IOCs to check via OpenTIP (default: unlimited — enrichment stops when \
+                OpenTIP returns 429 Quota; set to a number to cap explicitly, e.g. on free-tier \
+                accounts where the daily quota is ~200/day).",
+        default_value_t = usize::MAX,
+        hide_default_value = true,
     )]
     opentip_max: usize,
+
+    #[cfg(feature = "ioc-enrich")]
+    #[arg(
+        long = "enrich-threads",
+        help = "Concurrent workers for IOC enrichment (default: 8). Each provider parallelizes \
+                its per-IOC requests across this many threads. Lower it on free-tier provider \
+                accounts that throttle aggressively (some hit 429s above 4 QPS).",
+        default_value = "8"
+    )]
+    enrich_threads: usize,
 
     #[cfg(feature = "ioc-enrich")]
     #[arg(
@@ -422,6 +435,25 @@ fn level_color(level: &str) -> colored::ColoredString {
     }
 }
 
+/// Build an in-place single-line progress bar for an enrichment provider.
+/// The template renders as: "  ▶ <provider> [██████ ] 12/100 12% — eta 1m23s"
+/// and updates without scrolling. The total may not be known when the bar is
+/// created (e.g. the cap is fed from the actual enricher's prioritization
+/// step), so it's set to 0 here and patched on the first progress callback.
+#[cfg(feature = "ioc-enrich")]
+fn make_enrich_pb(provider: &str) -> indicatif::ProgressBar {
+    let pb = indicatif::ProgressBar::new(0);
+    let template = format!(
+        "  \u{25b6} {} [{{bar:30.cyan/blue}}] {{pos}}/{{len}} {{percent}}% \u{2014} eta {{eta}}",
+        provider
+    );
+    if let Ok(style) = indicatif::ProgressStyle::default_bar().template(&template) {
+        pb.set_style(style.progress_chars("\u{2588}\u{2591} "));
+    }
+    pb.enable_steady_tick(std::time::Duration::from_millis(120));
+    pb
+}
+
 /// Read available memory from /proc/meminfo (Linux only).
 /// Returns available bytes, or None on non-Linux / parse failure.
 fn available_memory_bytes() -> Option<u64> {
@@ -487,9 +519,41 @@ fn enrich_from_csv_main(
     }
     if let Some(op) = cli.opentip_key.as_deref() {
         let cap = cli.opentip_max.max(1);
-        all_enriched.extend(try_provider("Kaspersky OpenTIP", &|| {
-            muninn::ioc::enrich_opentip_with_cap(&iocs, op, cap)
-        }));
+        let workers = cli.enrich_threads.max(1);
+        if !cli.quiet {
+            println!(
+                "  {} Kaspersky OpenTIP ({} workers)...",
+                "▶".cyan(),
+                workers
+            );
+        }
+        let pb = if cli.quiet {
+            None
+        } else {
+            Some(make_enrich_pb("OpenTIP"))
+        };
+        let result = {
+            let pb_ref = pb.as_ref();
+            muninn::ioc::enrich_opentip_parallel(&iocs, op, cap, workers, &move |done, total| {
+                if let Some(p) = pb_ref {
+                    if p.length() != Some(total as u64) {
+                        p.set_length(total as u64);
+                    }
+                    p.set_position(done as u64);
+                }
+            })
+        };
+        if let Some(p) = pb {
+            p.finish_and_clear();
+        }
+        match result {
+            Ok(v) => all_enriched.extend(v),
+            Err(e) => {
+                if !cli.quiet {
+                    eprintln!("  {} OpenTIP failed: {}", "✗".red(), e);
+                }
+            }
+        }
     }
     if let Some(ach) = cli.abuse_ch_key.as_deref() {
         all_enriched.extend(try_provider("abuse.ch URLhaus", &|| {
@@ -2860,18 +2924,46 @@ fn main() -> Result<()> {
             }
 
             if let Some(ref opentip_key) = cli.opentip_key {
+                let workers = cli.enrich_threads.max(1);
                 if !cli.quiet {
+                    let cap_msg = if cli.opentip_max == usize::MAX {
+                        "no cap".to_string()
+                    } else {
+                        format!("cap: {}", cli.opentip_max)
+                    };
                     println!(
-                        "  {} Enriching IOCs via Kaspersky OpenTIP (cap: {} queries)...",
+                        "  {} Enriching IOCs via Kaspersky OpenTIP ({}, {} workers)...",
                         "▶".cyan(),
-                        cli.opentip_max
+                        cap_msg,
+                        workers
                     );
                 }
-                match muninn::ioc::enrich_opentip_with_cap(
-                    &iocs,
-                    opentip_key,
-                    cli.opentip_max.max(1),
-                ) {
+                let pb = if cli.quiet {
+                    None
+                } else {
+                    Some(make_enrich_pb("OpenTIP"))
+                };
+                let result = {
+                    let pb_ref = pb.as_ref();
+                    muninn::ioc::enrich_opentip_parallel(
+                        &iocs,
+                        opentip_key,
+                        cli.opentip_max.max(1),
+                        workers,
+                        &move |done, total| {
+                            if let Some(p) = pb_ref {
+                                if p.length() != Some(total as u64) {
+                                    p.set_length(total as u64);
+                                }
+                                p.set_position(done as u64);
+                            }
+                        },
+                    )
+                };
+                if let Some(p) = pb {
+                    p.finish_and_clear();
+                }
+                match result {
                     Ok(enriched) => all_enriched.extend(enriched),
                     Err(e) => {
                         if !cli.quiet {

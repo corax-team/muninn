@@ -1631,7 +1631,7 @@ pub fn enrich_abuseipdb(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>>
 
 #[cfg(feature = "ioc-enrich")]
 pub fn enrich_opentip(iocs: &[Ioc], api_key: &str) -> Result<Vec<EnrichedIoc>> {
-    enrich_opentip_with_cap(iocs, api_key, 200)
+    enrich_opentip_parallel(iocs, api_key, usize::MAX, 1, &|_, _| {})
 }
 
 #[cfg(feature = "ioc-enrich")]
@@ -1639,6 +1639,18 @@ pub fn enrich_opentip_with_cap(
     iocs: &[Ioc],
     api_key: &str,
     max_queries: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Vec<EnrichedIoc>> {
+    enrich_opentip_parallel(iocs, api_key, max_queries, 1, on_progress)
+}
+
+#[cfg(feature = "ioc-enrich")]
+pub fn enrich_opentip_parallel(
+    iocs: &[Ioc],
+    api_key: &str,
+    max_queries: usize,
+    workers: usize,
+    on_progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<Vec<EnrichedIoc>> {
     // OpenTIP API moved to GET-based queries (POST returns 405 since 2024). Build
     // the URL as `<base>/<type>?request=<value>`, expect the response with a
@@ -1652,7 +1664,6 @@ pub fn enrich_opentip_with_cap(
     // count ASC (rare first — that's where unknowns live), then everything
     // else. The original Vec order is unchanged for the caller.
     const BASE: &str = "https://opentip.kaspersky.com/api/v1/search";
-    let mut enriched = Vec::new();
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
         .build();
@@ -1693,125 +1704,142 @@ pub fn enrich_opentip_with_cap(
         max_queries
     );
 
-    let mut quota_hit = false;
-    for &idx in order.iter().take(to_query) {
-        let ioc = &iocs[idx];
-        let type_label = match ioc.ioc_type {
-            IocType::Md5 | IocType::Sha1 | IocType::Sha256 => "hash",
-            // OpenTIP's `/search/ip` accepts both IPv4 and IPv6 — the v4-only
-            // restriction we used to have was a code-side oversight.
-            IocType::Ipv4 | IocType::Ipv6 => "ip",
-            IocType::Domain => "domain",
-            IocType::Url => "url",
-            _ => continue,
-        };
-        // url-encode the IOC value so colons/slashes/etc. don't break the query.
-        let encoded = url_encode(&ioc.value);
-        let endpoint = format!("{}/{}?request={}", BASE, type_label, encoded);
+    // Truncate to the requested cap — keeps things tidy when we hand the index
+    // list to a parallel iterator below.
+    let order: Vec<usize> = order.into_iter().take(to_query).collect();
 
-        match agent.get(&endpoint).set("x-api-key", api_key).call() {
-            Ok(resp) => {
-                let body = resp.into_string().unwrap_or_default();
-                let json: serde_json::Value =
-                    serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
-                // Modern endpoint returns `Zone` at the top level. Default Grey
-                // when the field is missing — matches portal UI behavior for
-                // unknown / not-yet-classified items.
-                let zone = json["Zone"].as_str().unwrap_or("Grey");
-                let (verdict, score) = match zone {
-                    "Red" => ("malicious", 90.0),
-                    "Orange" => ("suspicious", 60.0),
-                    "Yellow" => ("suspicious", 40.0),
-                    "Green" => ("clean", 5.0),
-                    _ => ("unknown", 0.0),
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // A scoped thread pool sized to `workers` (clamped 1..=32). Using a custom
+    // pool — instead of the global rayon one — keeps SIGMA matching, parsing,
+    // and parallel enrichment from fighting over the same threads.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers.clamp(1, 32))
+        .build()
+        .map_err(|e| anyhow::anyhow!("rayon pool: {}", e))?;
+
+    let progress = AtomicUsize::new(0);
+    let stop_now = AtomicBool::new(false);
+
+    // Per-request sleep: stay polite even with parallelism. Total QPS roughly
+    // = workers / per_sleep, so 8 workers × 250 ms ≈ 32 QPS. Free OpenTIP tier
+    // can absorb that until the daily quota hits.
+    let per_sleep_ms = 250u64;
+
+    let results: Vec<EnrichedIoc> = pool.install(|| {
+        order
+            .par_iter()
+            .filter_map(|&idx| {
+                if stop_now.load(Ordering::Relaxed) {
+                    return None;
+                }
+                let ioc = &iocs[idx];
+                let type_label = match ioc.ioc_type {
+                    IocType::Md5 | IocType::Sha1 | IocType::Sha256 => "hash",
+                    IocType::Ipv4 | IocType::Ipv6 => "ip",
+                    IocType::Domain => "domain",
+                    IocType::Url => "url",
+                    _ => return None,
                 };
-                let categories: Vec<String> = json["Categories"]
-                    .as_array()
-                    .or_else(|| json["DetectionsInfo"].as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| {
-                                v.as_str()
-                                    .map(str::to_string)
-                                    .or_else(|| v["DetectionName"].as_str().map(str::to_string))
+                let encoded = url_encode(&ioc.value);
+                let endpoint = format!("{}/{}?request={}", BASE, type_label, encoded);
+                let outcome = match agent.get(&endpoint).set("x-api-key", api_key).call() {
+                    Ok(resp) => {
+                        let body = resp.into_string().unwrap_or_default();
+                        let json: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                        let zone = json["Zone"].as_str().unwrap_or("Grey");
+                        let (verdict, score) = match zone {
+                            "Red" => ("malicious", 90.0),
+                            "Orange" => ("suspicious", 60.0),
+                            "Yellow" => ("suspicious", 40.0),
+                            "Green" => ("clean", 5.0),
+                            _ => ("unknown", 0.0),
+                        };
+                        let categories: Vec<String> = json["Categories"]
+                            .as_array()
+                            .or_else(|| json["DetectionsInfo"].as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| {
+                                        v.as_str().map(str::to_string).or_else(|| {
+                                            v["DetectionName"].as_str().map(str::to_string)
+                                        })
+                                    })
+                                    .collect()
                             })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let details = if categories.is_empty() {
-                    format!("zone: {}", zone)
-                } else {
-                    format!("zone: {}, categories: {}", zone, categories.join(", "))
+                            .unwrap_or_default();
+                        let details = if categories.is_empty() {
+                            format!("zone: {}", zone)
+                        } else {
+                            format!("zone: {}, categories: {}", zone, categories.join(", "))
+                        };
+                        Some(EnrichedIoc {
+                            ioc: ioc.clone(),
+                            verdict: verdict.into(),
+                            source: "OpenTIP".into(),
+                            details,
+                            score: Some(score),
+                            raw_response: Some(body),
+                        })
+                    }
+                    Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
+                        log::warn!("OpenTIP authentication failed (401/403) — check --opentip-key");
+                        stop_now.store(true, Ordering::Relaxed);
+                        Some(EnrichedIoc {
+                            ioc: ioc.clone(),
+                            verdict: "error".into(),
+                            source: "OpenTIP".into(),
+                            details: "Authentication failed (401/403). Check --opentip-key.".into(),
+                            score: None,
+                            raw_response: None,
+                        })
+                    }
+                    Err(ureq::Error::Status(429, _)) => {
+                        log::warn!("OpenTIP rate limit (429) — stopping after this batch");
+                        stop_now.store(true, Ordering::Relaxed);
+                        Some(EnrichedIoc {
+                            ioc: ioc.clone(),
+                            verdict: "error".into(),
+                            source: "OpenTIP".into(),
+                            details: "Rate limit exceeded".into(),
+                            score: None,
+                            raw_response: None,
+                        })
+                    }
+                    Err(ureq::Error::Status(404, _)) => Some(EnrichedIoc {
+                        ioc: ioc.clone(),
+                        verdict: "unknown".into(),
+                        source: "OpenTIP".into(),
+                        details: "Not found".into(),
+                        score: None,
+                        raw_response: None,
+                    }),
+                    Err(ureq::Error::Status(code, resp)) => {
+                        let body = resp.into_string().unwrap_or_default();
+                        log::warn!(
+                            "OpenTIP HTTP {} for {}: {}",
+                            code,
+                            ioc.value,
+                            body.chars().take(120).collect::<String>()
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        log::warn!("OpenTIP request failed for {}: {}", ioc.value, e);
+                        None
+                    }
                 };
-                enriched.push(EnrichedIoc {
-                    ioc: ioc.clone(),
-                    verdict: verdict.into(),
-                    source: "OpenTIP".into(),
-                    details,
-                    score: Some(score),
-                    raw_response: Some(body),
-                });
-            }
-            Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _)) => {
-                // Auth failure — the user almost certainly wants to see this loud,
-                // not buried in debug logs. Surface as a single visible error
-                // record and stop further requests (they'll all fail the same way).
-                log::warn!("OpenTIP authentication failed (401/403) — check --opentip-key");
-                enriched.push(EnrichedIoc {
-                    ioc: ioc.clone(),
-                    verdict: "error".into(),
-                    source: "OpenTIP".into(),
-                    details: "Authentication failed (401/403). Check --opentip-key.".into(),
-                    score: None,
-                    raw_response: None,
-                });
-                break;
-            }
-            Err(ureq::Error::Status(429, _)) => {
-                log::warn!(
-                    "OpenTIP rate limit reached after {} queries",
-                    enriched.len()
-                );
-                enriched.push(EnrichedIoc {
-                    ioc: ioc.clone(),
-                    verdict: "error".into(),
-                    source: "OpenTIP".into(),
-                    details: "Rate limit exceeded".into(),
-                    score: None,
-                    raw_response: None,
-                });
-                quota_hit = true;
-                break;
-            }
-            Err(ureq::Error::Status(404, _)) => {
-                enriched.push(EnrichedIoc {
-                    ioc: ioc.clone(),
-                    verdict: "unknown".into(),
-                    source: "OpenTIP".into(),
-                    details: "Not found".into(),
-                    score: None,
-                    raw_response: None,
-                });
-            }
-            Err(ureq::Error::Status(code, resp)) => {
-                let body = resp.into_string().unwrap_or_default();
-                log::warn!(
-                    "OpenTIP HTTP {} for {}: {}",
-                    code,
-                    ioc.value,
-                    body.chars().take(120).collect::<String>()
-                );
-            }
-            Err(e) => {
-                log::warn!("OpenTIP request failed for {}: {}", ioc.value, e);
-            }
-        }
+                let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
+                on_progress(done, to_query);
+                std::thread::sleep(std::time::Duration::from_millis(per_sleep_ms));
+                outcome
+            })
+            .collect()
+    });
 
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-
-    let _ = quota_hit; // currently informational only; kept for future use
-    Ok(enriched)
+    Ok(results)
 }
 
 fn url_encode(s: &str) -> String {
