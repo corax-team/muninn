@@ -857,17 +857,19 @@ mod tests {
         // Both events made it through and the value from batch 2 lands in the
         // single canonical column (case-insensitive lookup at INSERT time).
         let r = eng
-            .query_sql(
-                "SELECT \"FthEnabledProcessStartup\" FROM \"events\" ORDER BY \"EventID\"",
-            )
+            .query_sql("SELECT \"FthEnabledProcessStartup\" FROM \"events\" ORDER BY \"EventID\"")
             .unwrap();
         assert_eq!(r.rows.len(), 2);
         assert_eq!(
-            r.rows[0].get("FthEnabledProcessStartup").map(|s| s.as_str()),
+            r.rows[0]
+                .get("FthEnabledProcessStartup")
+                .map(|s| s.as_str()),
             Some("True")
         );
         assert_eq!(
-            r.rows[1].get("FthEnabledProcessStartup").map(|s| s.as_str()),
+            r.rows[1]
+                .get("FthEnabledProcessStartup")
+                .map(|s| s.as_str()),
             Some("False")
         );
     }
