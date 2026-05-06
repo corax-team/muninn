@@ -887,13 +887,61 @@ fn main() -> Result<()> {
     {
         cli.report_dir = Some(PathBuf::from(format!("muninn_report_{}", ts_str)));
     }
-    // If --gui is auto-enabled (meta-flag) without an explicit --report-dir,
-    // default to a sibling folder so all the auto side-car files stay grouped.
-    if cli.gui.is_some() && cli.report_dir.is_none() {
+    // ── Report-dir resolution ────────────────────────────────────────────
+    // Three paths land us in a single output folder:
+    //   1. user passed `--report-dir <path>` explicitly
+    //   2. user passed `--report-dir` (no value) → "auto" literal that we
+    //      resolve here to a timestamped name
+    //   3. user produced ANY artifact-emitting flag (--ioc-extract, --gui,
+    //      --opentip-check, --opentip-key, --vt-key, --abuseipdb-key,
+    //      --abuse-ch-key, --enrich-free, --threat-score, --login-analysis,
+    //      --summary, --killchain, --timeline, --anomalies, --correlate,
+    //      --keepflat, --navigator, --dbfile, --template-output) without
+    //      naming a folder — we create one automatically by analogy with
+    //      what --gui already did, so cwd doesn't fill up with timestamped
+    //      side-car files.
+    //
+    // This was added in v0.8.1: a typical OpenTIP / IOC run was leaving five
+    // to ten files in cwd; users couldn't tell which run owned which file.
+    // Folder = run name = atomic case artefact.
+    if cli
+        .report_dir
+        .as_ref()
+        .is_some_and(|p| p.as_os_str() == "auto")
+    {
+        cli.report_dir = Some(PathBuf::from(format!("muninn_report_{}", ts_str)));
+    }
+    #[cfg(feature = "ioc-enrich")]
+    let any_enrich_flag = cli.opentip_check.is_some()
+        || cli.opentip_key.is_some()
+        || cli.vt_key.is_some()
+        || cli.abuseipdb_key.is_some()
+        || cli.abuse_ch_key.is_some()
+        || cli.enrich_free;
+    #[cfg(not(feature = "ioc-enrich"))]
+    let any_enrich_flag = false;
+    let any_artifact_flag = cli.gui.is_some()
+        || cli.ioc_extract.is_some()
+        || any_enrich_flag
+        || cli.threat_score.is_some()
+        || cli.login_analysis.is_some()
+        || cli.summary.is_some()
+        || cli.killchain.is_some()
+        || cli.timeline.is_some()
+        || cli.anomalies.is_some()
+        || cli.correlate.is_some()
+        || cli.keepflat.is_some()
+        || cli.navigator.is_some()
+        || cli.dbfile.is_some()
+        || cli.template_output.is_some();
+    if any_artifact_flag && cli.report_dir.is_none() {
         cli.report_dir = Some(PathBuf::from(format!("muninn_report_{}", ts_str)));
     }
     if let Some(ref dir) = cli.report_dir {
         std::fs::create_dir_all(dir)?;
+        if !cli.quiet {
+            eprintln!("  {} Reports → {:?}", "[i]".cyan(), dir);
+        }
     }
     // `auto_path("report", "html")` returns either `<report_dir>/report.html`
     // or the legacy `muninn_report_<ts>.html` when no folder is in use.

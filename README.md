@@ -234,8 +234,12 @@ muninn -e ./evidence/ --anomalies anomalies.html               # save as HTML
 muninn -e ./evidence/ --ioc-extract
 muninn -e ./evidence/ --ioc-extract iocs.html                  # explicit output filename
 
-# Note: any enrichment flag below auto-enables --ioc-extract. The explicit flag
-# is shown for clarity but can be omitted if you only want enrichment output.
+# Note: any artifact-producing flag (--ioc-extract, --opentip-*, --vt-key,
+# --enrich-free, --gui, --killchain, --timeline, --threat-score, etc.)
+# auto-creates a timestamped run folder `muninn_report_<ts>/` and writes
+# every side-car file (iocs.txt, iocs.csv, iocs.enriched.html, report.json,
+# scores.txt, killchain.txt, …) inside it — keeps cwd tidy across runs.
+# Override with `--report-dir <path>` to pick the folder name explicitly.
 
 # IOC enrichment — registration-free feeds (CIRCL Hashlookup + Team Cymru MHR)
 muninn -e ./evidence/ --enrich-free                            # extracts + enriches in one pass
@@ -1224,6 +1228,7 @@ muninn --enrich-from muninn_iocs_<timestamp>.csv \
 | **Таймлайн атаки** | `--timeline [FILE]` | Хронология детектов |
 | **Детекция аномалий** | `--anomalies [FILE]` | Редкие процессы, нетипичное время логона, подозрительные parent→child, обнаружение брутфорса, оценка обфускации команд |
 | **Извлечение IOC** | `--ioc-extract [FILE]` | IP (v4/v6), домены, URL, хэши (MD5/SHA1/SHA256), email, пути, реестр, службы, задачи, пайпы. **Авто-включается** при любом enrichment-флаге — явный флаг можно опустить |
+| **Папка для отчётов** | `--report-dir [PATH]` | Все артефакты (`iocs.txt`, `iocs.csv`, `iocs.enriched.{html,json}`, `report.json`, `killchain.txt`, `scores.txt` и т.д.) пишутся в одну папку. **Авто-создаётся** `muninn_report_<timestamp>/` если хотя бы один artifact-флаг включён — cwd не засоряется side-car файлами. Передайте `--report-dir <path>` чтобы выбрать имя папки явно |
 | **Обогащение IOC** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` / `--abuse-ch-key` / `--enrich-free` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP, abuse.ch (URLhaus + ThreatFox + MalwareBazaar), CIRCL Hashlookup + Team Cymru MHR без регистрации. Все провайдеры выполняются параллельно (default 8 worker'ов, конфигурируется `--enrich-threads`). Прогресс-бар в одну строку с ETA. Любой из этих флагов автоматически включает `--ioc-extract` |
 | **Re-enrich без перепарсинга** | `--enrich-from <CSV>` | Перезапуск обогащения на ранее сохранённом IOC-CSV без re-parse EVTX. Idempotent, удобно для итераций ключей и thread-counts |
 | **HTML-отчёт обогащения** | *(автоматически)* | `*.enriched.html` рядом с CSV — sortable-таблица с цветными verdict-бейджами (RED / YELLOW / GREEN / GREY / error) и 5–7 кликабельными pivot-ссылками per IOC: <br>**hash** → OpenTIP · VirusTotal · MalwareBazaar · OTX · Triage · Hybrid Analysis · Any.run<br>**IP** → OpenTIP · AbuseIPDB · VirusTotal · GreyNoise · Shodan · OTX · Cisco Talos<br>**domain** → OpenTIP · VirusTotal · URLhaus · urlscan.io · OTX · Cisco Talos<br>**URL** → OpenTIP · URLhaus · VirusTotal · urlscan.io · OTX |
