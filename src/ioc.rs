@@ -2777,31 +2777,101 @@ sortBy(0);
 
 /// Build clickable anchor tags pointing to per-IOC-type pivot portals.
 /// Output is HTML-safe (values are URL-encoded; rest is hardcoded).
+///
+/// Each IOC type gets a curated set of 5–6 pivots covering complementary
+/// angles: AV verdict (OpenTIP, VT), reputation (AbuseIPDB, GreyNoise, Talos),
+/// sandbox (Hybrid Analysis, Triage, Any.run), corpus / hunting (MalwareBazaar,
+/// URLhaus, urlscan.io), and community-curated context (AlienVault OTX).
+/// All chosen for a free or freemium tier so analysts can click without
+/// paywalls.
 fn enrichment_links(ioc: &Ioc) -> String {
     let v = &ioc.value;
     let enc = url_encode_for_link(v);
+    let mut links = String::new();
+    let mut push = |label: &str, url: String| {
+        links.push_str(&format!(
+            "<a href=\"{url}\" target=\"_blank\" rel=\"noopener\">{label}</a>"
+        ));
+    };
     match ioc.ioc_type {
-        IocType::Md5 | IocType::Sha1 | IocType::Sha256 => format!(
-            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
-             <a href=\"https://www.virustotal.com/gui/file/{enc}\" target=\"_blank\">vt</a>\
-             <a href=\"https://bazaar.abuse.ch/sample/{enc}/\" target=\"_blank\">bazaar</a>"
-        ),
-        IocType::Ipv4 | IocType::Ipv6 => format!(
-            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
-             <a href=\"https://www.abuseipdb.com/check/{enc}\" target=\"_blank\">abuseipdb</a>\
-             <a href=\"https://www.virustotal.com/gui/ip-address/{enc}\" target=\"_blank\">vt</a>"
-        ),
-        IocType::Domain => format!(
-            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
-             <a href=\"https://www.virustotal.com/gui/domain/{enc}\" target=\"_blank\">vt</a>\
-             <a href=\"https://urlhaus.abuse.ch/browse.php?search={enc}\" target=\"_blank\">urlhaus</a>"
-        ),
-        IocType::Url => format!(
-            "<a href=\"https://opentip.kaspersky.com/{enc}\" target=\"_blank\">opentip</a>\
-             <a href=\"https://urlhaus.abuse.ch/browse.php?search={enc}\" target=\"_blank\">urlhaus</a>"
-        ),
-        _ => String::new(),
+        IocType::Md5 | IocType::Sha1 | IocType::Sha256 => {
+            push("opentip", format!("https://opentip.kaspersky.com/{enc}"));
+            push("vt", format!("https://www.virustotal.com/gui/file/{enc}"));
+            push("bazaar", format!("https://bazaar.abuse.ch/sample/{enc}/"));
+            push(
+                "otx",
+                format!("https://otx.alienvault.com/indicator/file/{enc}"),
+            );
+            push("triage", format!("https://tria.ge/s?q={enc}"));
+            push(
+                "hybrid",
+                format!("https://www.hybrid-analysis.com/search?query={enc}"),
+            );
+            push(
+                "anyrun",
+                format!("https://app.any.run/submissions/?h={enc}"),
+            );
+        }
+        IocType::Ipv4 | IocType::Ipv6 => {
+            push("opentip", format!("https://opentip.kaspersky.com/{enc}"));
+            push(
+                "abuseipdb",
+                format!("https://www.abuseipdb.com/check/{enc}"),
+            );
+            push(
+                "vt",
+                format!("https://www.virustotal.com/gui/ip-address/{enc}"),
+            );
+            push("greynoise", format!("https://viz.greynoise.io/ip/{enc}"));
+            push("shodan", format!("https://www.shodan.io/host/{enc}"));
+            push(
+                "otx",
+                format!("https://otx.alienvault.com/indicator/ip/{enc}"),
+            );
+            push(
+                "talos",
+                format!("https://talosintelligence.com/reputation_center/lookup?search={enc}"),
+            );
+        }
+        IocType::Domain => {
+            push("opentip", format!("https://opentip.kaspersky.com/{enc}"));
+            push("vt", format!("https://www.virustotal.com/gui/domain/{enc}"));
+            push(
+                "urlhaus",
+                format!("https://urlhaus.abuse.ch/browse.php?search={enc}"),
+            );
+            push("urlscan", format!("https://urlscan.io/domain/{enc}"));
+            push(
+                "otx",
+                format!("https://otx.alienvault.com/indicator/domain/{enc}"),
+            );
+            push(
+                "talos",
+                format!("https://talosintelligence.com/reputation_center/lookup?search={enc}"),
+            );
+        }
+        IocType::Url => {
+            push("opentip", format!("https://opentip.kaspersky.com/{enc}"));
+            push(
+                "urlhaus",
+                format!("https://urlhaus.abuse.ch/browse.php?search={enc}"),
+            );
+            // VT URL detail page expects a base64url-no-pad of the raw URL.
+            let vt_id =
+                base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, v);
+            push("vt", format!("https://www.virustotal.com/gui/url/{vt_id}"));
+            push(
+                "urlscan",
+                format!("https://urlscan.io/search/#page.url%3A%22{enc}%22"),
+            );
+            push(
+                "otx",
+                format!("https://otx.alienvault.com/indicator/url/{enc}"),
+            );
+        }
+        _ => {}
     }
+    links
 }
 
 fn url_encode_for_link(s: &str) -> String {
