@@ -945,6 +945,28 @@ fn main() -> Result<()> {
     {
         cli.anomalies = Some(auto_path("anomalies", "txt"));
     }
+    // Any IOC-enrichment flag implies IOC extraction. Without this, passing
+    // (e.g.) `--opentip-check KEY` without `--ioc-extract` silently does
+    // nothing: the IOC pipeline never runs, so the OpenTIP block — nested
+    // inside the IOC block — is unreachable. Now we auto-enable extraction
+    // and print a one-line notice so the user understands what happened.
+    #[cfg(feature = "ioc-enrich")]
+    let any_enrich_flag = cli.opentip_check.is_some()
+        || cli.opentip_key.is_some()
+        || cli.vt_key.is_some()
+        || cli.abuseipdb_key.is_some()
+        || cli.abuse_ch_key.is_some()
+        || cli.enrich_free;
+    #[cfg(feature = "ioc-enrich")]
+    if cli.ioc_extract.is_none() && any_enrich_flag {
+        cli.ioc_extract = Some(PathBuf::from("auto"));
+        if !cli.quiet {
+            eprintln!(
+                "  {} --ioc-extract auto-enabled (required by enrichment flags)",
+                "[i]".cyan()
+            );
+        }
+    }
     if cli
         .ioc_extract
         .as_ref()
