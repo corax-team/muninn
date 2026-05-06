@@ -93,7 +93,16 @@ muninn --load-db case001.db --distinct Image
 muninn --load-db case001.db --field "User=%admin%"
 
 # 5. Check IOCs against threat intelligence
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-types hash
+# (any enrichment flag auto-enables --ioc-extract; the explicit flag is no longer required)
+muninn --load-db case001.db --opentip-check YOUR_KEY --opentip-types hash
+
+# 6. Parallel enrichment across multiple providers in one pass
+muninn --load-db case001.db --enrich-free \
+  --opentip-key YOUR_KEY --abuse-ch-key YOUR_AC_KEY --enrich-threads 16
+
+# 7. Re-enrich a previously-saved IOC CSV WITHOUT re-parsing evidence
+muninn --enrich-from muninn_iocs_<timestamp>.csv \
+  --opentip-key YOUR_KEY --abuse-ch-key YOUR_AC_KEY --enrich-threads 16
 ```
 
 > **Why use `--dbfile` + `--load-db`?** Parsing 4 GB of EVTX logs takes ~8 minutes.
@@ -225,21 +234,24 @@ muninn -e ./evidence/ --anomalies anomalies.html               # save as HTML
 muninn -e ./evidence/ --ioc-extract
 muninn -e ./evidence/ --ioc-extract iocs.html                  # explicit output filename
 
+# Note: any enrichment flag below auto-enables --ioc-extract. The explicit flag
+# is shown for clarity but can be omitted if you only want enrichment output.
+
 # IOC enrichment — registration-free feeds (CIRCL Hashlookup + Team Cymru MHR)
-muninn -e ./evidence/ --ioc-extract --enrich-free
+muninn -e ./evidence/ --enrich-free                            # extracts + enriches in one pass
 
 # IOC enrichment via abuse.ch family (URLhaus, ThreatFox, MalwareBazaar)
 # Key is free but requires 1-min signup at https://auth.abuse.ch
-muninn -e ./evidence/ --ioc-extract --abuse-ch-key YOUR_ABUSE_CH_KEY
-ABUSE_CH_KEY=... muninn -e ./evidence/ --ioc-extract --abuse-ch-key
+muninn -e ./evidence/ --abuse-ch-key YOUR_ABUSE_CH_KEY
+ABUSE_CH_KEY=... muninn -e ./evidence/ --abuse-ch-key
 
 # IOC enrichment via paid / registered services
-muninn -e ./evidence/ --ioc-extract --vt-key YOUR_VT_KEY
-muninn -e ./evidence/ --ioc-extract --abuseipdb-key YOUR_ABUSEIPDB_KEY
-muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_OPENTIP_KEY
+muninn -e ./evidence/ --vt-key YOUR_VT_KEY
+muninn -e ./evidence/ --abuseipdb-key YOUR_ABUSEIPDB_KEY
+muninn -e ./evidence/ --opentip-key YOUR_OPENTIP_KEY
 
 # Combined (recommended) — every available provider in one pass, parallel
-muninn -e ./evidence/ --ioc-extract --enrich-free \
+muninn -e ./evidence/ --enrich-free \
   --opentip-key YOUR_OPENTIP_KEY \
   --abuse-ch-key YOUR_ABUSE_CH_KEY \
   --vt-key YOUR_VT_KEY \
@@ -247,26 +259,29 @@ muninn -e ./evidence/ --ioc-extract --enrich-free \
 
 # Tune parallelism (default 8 workers; per-provider rate-limits clamp lower
 # when needed: VirusTotal forced to 1, AbuseIPDB to 2, others honour the value)
-muninn -e ./evidence/ --ioc-extract --enrich-free --enrich-threads 16
-muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_KEY --enrich-threads 4
+muninn -e ./evidence/ --enrich-free --enrich-threads 16
+muninn -e ./evidence/ --opentip-key YOUR_KEY --enrich-threads 4
 
 # Cap OpenTIP queries explicitly (default: unlimited; stops on 429)
-muninn -e ./evidence/ --ioc-extract --opentip-key YOUR_KEY --opentip-max 200
+muninn -e ./evidence/ --opentip-key YOUR_KEY --opentip-max 200
 
 # Re-run enrichment on a previously-saved IOC CSV WITHOUT re-parsing evidence.
 # Iterate provider keys / thread counts cheaply; output is .enriched.{txt,json,html}
-# alongside the input CSV with clickable pivot links to OpenTIP, VirusTotal,
-# AbuseIPDB, MalwareBazaar, and URLhaus per IOC.
+# alongside the input CSV. The HTML carries 5–7 clickable pivot links per IOC:
+#   hash:    OpenTIP, VirusTotal, MalwareBazaar, AlienVault OTX, Triage, Hybrid Analysis, Any.run
+#   IP:      OpenTIP, AbuseIPDB, VirusTotal, GreyNoise, Shodan, OTX, Cisco Talos
+#   domain:  OpenTIP, VirusTotal, URLhaus, urlscan.io, OTX, Cisco Talos
+#   URL:     OpenTIP, URLhaus, VirusTotal, urlscan.io, OTX
 muninn --enrich-from muninn_iocs_2026-05-06.csv --enrich-free
 muninn --enrich-from muninn_iocs_2026-05-06.csv \
   --opentip-key YOUR_KEY --abuse-ch-key YOUR_AC_KEY --enrich-threads 16
 
 # Kaspersky OpenTIP deep check (separate code path with parallel HTTP, detailed reports)
-muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY               # all IOC types
-muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY --opentip-types hash        # hashes only
-muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY --opentip-types ip          # IPs only
-muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY --opentip-types hash,ip     # hashes + IPs
-muninn -e ./evidence/ --ioc-extract --opentip-check YOUR_KEY --opentip-max 500           # up to 500 checks
+muninn -e ./evidence/ --opentip-check YOUR_KEY                             # all IOC types
+muninn -e ./evidence/ --opentip-check YOUR_KEY --opentip-types hash        # hashes only
+muninn -e ./evidence/ --opentip-check YOUR_KEY --opentip-types ip          # IPs only
+muninn -e ./evidence/ --opentip-check YOUR_KEY --opentip-types hash,ip     # hashes + IPs
+muninn -e ./evidence/ --opentip-check YOUR_KEY --opentip-max 500           # up to 500 checks
 
 # Login analysis (Windows Security events 4624/4625/4672)
 muninn -e ./evidence/ --login-analysis                         # brute force, lateral movement, privesc
@@ -327,16 +342,17 @@ muninn --load-db case001.db -r sigma-rules/ --gui report.html
 muninn --load-db case001.db --ioc-extract
 
 # Check extracted IOCs against Kaspersky OpenTIP
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_API_KEY
+# (--opentip-check auto-enables --ioc-extract; explicit --ioc-extract not required)
+muninn --load-db case001.db --opentip-check YOUR_API_KEY
 
 # Check only hashes
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_API_KEY --opentip-types hash
+muninn --load-db case001.db --opentip-check YOUR_API_KEY --opentip-types hash
 
 # Check only IPs
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_API_KEY --opentip-types ip
+muninn --load-db case001.db --opentip-check YOUR_API_KEY --opentip-types ip
 
 # Check hashes + domains, limit 100
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_API_KEY --opentip-types hash,domain --opentip-max 100
+muninn --load-db case001.db --opentip-check YOUR_API_KEY --opentip-types hash,domain --opentip-max 100
 
 # ── Step 5: IR analysis ────────────────────────────────────────────────
 
@@ -880,8 +896,8 @@ muninn -e ./evidence/ -r sigma-rules/ --template splunk --template-output splunk
 # Step 5: Deep-dive with TUI
 muninn -e ./evidence/ -r sigma-rules/ --tui
 
-# Step 6: Export enriched IOCs
-muninn -e ./evidence/ --ioc-extract --vt-key YOUR_KEY -o ioc-report.json
+# Step 6: Export enriched IOCs (--vt-key auto-enables --ioc-extract)
+muninn -e ./evidence/ --vt-key YOUR_KEY -o ioc-report.json
 
 # Step 7: Compare before/after remediation
 muninn -e ./evidence-before/ -r sigma-rules/ --diff ./evidence-after/
@@ -1166,9 +1182,18 @@ muninn --load-db case001.db --sql "SELECT * FROM events WHERE EventID = '4688'"
 muninn --load-db case001.db --distinct Image
 
 # 5. Проверка IOC через Kaspersky OpenTIP
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-types hash
-muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-types ip,domain
+# (любой enrichment-флаг автоматически включает --ioc-extract, прежний явный флаг можно убрать)
+muninn --load-db case001.db --opentip-check YOUR_KEY
+muninn --load-db case001.db --opentip-check YOUR_KEY --opentip-types hash
+muninn --load-db case001.db --opentip-check YOUR_KEY --opentip-types ip,domain
+
+# 6. Параллельное обогащение через несколько провайдеров за один проход
+muninn --load-db case001.db --enrich-free \
+  --opentip-key YOUR_KEY --abuse-ch-key YOUR_AC_KEY --enrich-threads 16
+
+# 7. Re-обогащение ранее сохранённого CSV без перепарсинга EVTX
+muninn --enrich-from muninn_iocs_<timestamp>.csv \
+  --opentip-key YOUR_KEY --abuse-ch-key YOUR_AC_KEY --enrich-threads 16
 ```
 
 > **Зачем база?** Парсинг 4 ГБ EVTX занимает ~8 минут. Сохранив результат в БД,
@@ -1198,8 +1223,8 @@ muninn --load-db case001.db --ioc-extract --opentip-check YOUR_KEY --opentip-typ
 | **Kill chain** | `--killchain [FILE]` | ASCII-визуализация по тактикам |
 | **Таймлайн атаки** | `--timeline [FILE]` | Хронология детектов |
 | **Детекция аномалий** | `--anomalies [FILE]` | Редкие процессы, нетипичное время логона, подозрительные parent→child, обнаружение брутфорса, оценка обфускации команд |
-| **Извлечение IOC** | `--ioc-extract [FILE]` | IP (v4/v6), домены, URL, хэши (MD5/SHA1/SHA256), email, пути, реестр, службы, задачи, пайпы |
-| **Обогащение IOC** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` / `--abuse-ch-key` / `--enrich-free` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP, abuse.ch (URLhaus + ThreatFox + MalwareBazaar), CIRCL Hashlookup + Team Cymru MHR без регистрации. Все провайдеры выполняются параллельно (default 8 worker'ов, конфигурируется `--enrich-threads`). Прогресс-бар в одну строку с ETA |
+| **Извлечение IOC** | `--ioc-extract [FILE]` | IP (v4/v6), домены, URL, хэши (MD5/SHA1/SHA256), email, пути, реестр, службы, задачи, пайпы. **Авто-включается** при любом enrichment-флаге — явный флаг можно опустить |
+| **Обогащение IOC** | `--vt-key` / `--abuseipdb-key` / `--opentip-key` / `--abuse-ch-key` / `--enrich-free` | VirusTotal, AbuseIPDB, Kaspersky OpenTIP, abuse.ch (URLhaus + ThreatFox + MalwareBazaar), CIRCL Hashlookup + Team Cymru MHR без регистрации. Все провайдеры выполняются параллельно (default 8 worker'ов, конфигурируется `--enrich-threads`). Прогресс-бар в одну строку с ETA. Любой из этих флагов автоматически включает `--ioc-extract` |
 | **Re-enrich без перепарсинга** | `--enrich-from <CSV>` | Перезапуск обогащения на ранее сохранённом IOC-CSV без re-parse EVTX. Idempotent, удобно для итераций ключей и thread-counts |
 | **HTML-отчёт обогащения** | *(автоматически)* | `*.enriched.html` рядом с CSV — sortable-таблица с цветными verdict-бейджами (RED / YELLOW / GREEN / GREY / error) и 5–7 кликабельными pivot-ссылками per IOC: <br>**hash** → OpenTIP · VirusTotal · MalwareBazaar · OTX · Triage · Hybrid Analysis · Any.run<br>**IP** → OpenTIP · AbuseIPDB · VirusTotal · GreyNoise · Shodan · OTX · Cisco Talos<br>**domain** → OpenTIP · VirusTotal · URLhaus · urlscan.io · OTX · Cisco Talos<br>**URL** → OpenTIP · URLhaus · VirusTotal · urlscan.io · OTX |
 | **Глубокая проверка OpenTIP** | `--opentip-check <KEY>` | Полный анализ через Kaspersky OpenTIP: отчёты TXT/HTML/JSON, параллельные запросы |
