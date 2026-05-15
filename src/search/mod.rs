@@ -268,35 +268,38 @@ impl SearchEngine {
         let mut loaded = 0;
         let empty = String::new();
 
-        // Pre-compute the lowercase-keyed column list so per-event lookups can
-        // fall back case-insensitively. SQLite resolves column names case-
-        // insensitively, but our `Event::fields` HashMap keeps original case;
-        // without this fallback, an event with `fthEnabledProcessStartup`
-        // silently drops its value when self.columns has the column under
-        // `FthEnabledProcessStartup`.
-        let columns_lower: Vec<String> = self.columns.iter().map(|c| c.to_lowercase()).collect();
+        // Lazy case-insensitive lookup. The common path — event field keys
+        // match column case exactly — pays ZERO extra allocations. Only when
+        // an exact-case `ev.fields.get(col)` MISSES do we build:
+        //   * `columns_lower` once for the whole batch
+        //   * `lower_index` once for THIS event
+        // Was a measurable hot-spot under eager construction at batch_size=50k
+        // (≈30 fields × 50k events = 1.5M to_lowercase() per batch, all
+        // unconditional). Now the work scales with case-mismatch frequency,
+        // which is near zero for most EVTX corpora.
+        let mut columns_lower: Option<Vec<String>> = None;
 
         for ev in events {
-            // Build a lower→value index once per event. Cheap (events have
-            // ~30-100 fields) and unblocks case-mismatched lookups.
-            let lower_index: HashMap<String, &String> = ev
-                .fields
-                .iter()
-                .map(|(k, v)| (k.to_lowercase(), v))
-                .collect();
-
+            let mut lower_index: Option<HashMap<String, &String>> = None;
             let params: Vec<&dyn rusqlite::types::ToSql> = self
                 .columns
                 .iter()
                 .enumerate()
                 .map(|(i, col)| -> &dyn rusqlite::types::ToSql {
                     if let Some(v) = ev.fields.get(col) {
-                        v
-                    } else if let Some(v) = lower_index.get(&columns_lower[i]) {
-                        *v
-                    } else {
-                        &empty
+                        return v;
                     }
+                    // Slow path — build the lowercase indexes on first miss.
+                    let cl = columns_lower.get_or_insert_with(|| {
+                        self.columns.iter().map(|c| c.to_lowercase()).collect()
+                    });
+                    let li = lower_index.get_or_insert_with(|| {
+                        ev.fields
+                            .iter()
+                            .map(|(k, v)| (k.to_lowercase(), v))
+                            .collect()
+                    });
+                    li.get(&cl[i]).map_or(&empty as _, |s| *s as _)
                 })
                 .collect();
             match stmt.execute(params.as_slice()) {
